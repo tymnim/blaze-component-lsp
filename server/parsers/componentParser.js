@@ -5,12 +5,18 @@ const ts = require("typescript");
  * @typedef {{ line: number, column: number }} Position
  * @typedef {{ start: Position, end: Position }} SourceRange
  *
+ * @typedef {Object} HelperParam
+ * @prop {string} name
+ * @prop {string} [type]
+ * @prop {string} [description]
+ *
  * @typedef {Object} HelperInfo
  * @prop {string} name
  * @prop {string} methodName
  * @prop {SourceRange} range
  * @prop {string} [returnType]
  * @prop {string} [documentation]
+ * @prop {HelperParam[]} [params]
  *
  * @typedef {Object} EventInfo
  * @prop {string} selector
@@ -83,6 +89,7 @@ function parseComponent(source, filePath) {
       if (doc) {
         if (doc.returnType) helper.returnType = doc.returnType;
         if (doc.documentation) helper.documentation = doc.documentation;
+        if (doc.params) helper.params = doc.params;
       }
     }
 
@@ -585,16 +592,18 @@ function parseFieldEntry(entry) {
  * @param {{ name: string, node: ts.ClassDeclaration }} cls
  * @param {ts.SourceFile} sourceFile
  * @param {string} source
- * @returns {Map<string, { returnType?: string, documentation?: string }>}
+ * @returns {Map<string, { returnType?: string, documentation?: string, params?: HelperParam[] }>}
  */
 function extractHelperDocs(cls, sourceFile, source) {
-  /** @type {Map<string, { returnType?: string, documentation?: string }>} */
+  /** @type {Map<string, { returnType?: string, documentation?: string, params?: HelperParam[] }>} */
   const docs = new Map();
 
   for (const member of cls.node.members) {
     if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
       let returnType;
       let documentation;
+      /** @type {HelperParam[]} */
+      const params = [];
 
       // 1. Try TS API JSDoc tags
       const jsDocNodes = ts.getJSDocTags(member);
@@ -608,9 +617,23 @@ function extractHelperDocs(cls, sourceFile, source) {
             returnType = typeof tag.comment === "string" ? tag.comment : tag.comment.map(c => c.text).join("");
           }
         }
+        if (tag.tagName.text === "param") {
+          const paramTag = /** @type {any} */ (tag);
+          const paramName = paramTag.name ? paramTag.name.getText(sourceFile) : undefined;
+          let paramType;
+          if (paramTag.typeExpression && paramTag.typeExpression.type) {
+            paramType = source.slice(paramTag.typeExpression.type.pos, paramTag.typeExpression.type.end).trim();
+          }
+          const paramDesc = tag.comment
+            ? (typeof tag.comment === "string" ? tag.comment : tag.comment.map(c => c.text).join(""))
+            : undefined;
+          if (paramName) {
+            params.push({ name: paramName, type: paramType, description: paramDesc });
+          }
+        }
       }
 
-      // 2. Fallback: regex on the raw JSDoc comment for @returns {type}
+      // 2. Fallback: regex on the raw JSDoc comment
       const fullStart = member.getFullStart();
       const start = member.getStart(sourceFile);
       const leadingText = source.slice(fullStart, start);
@@ -622,6 +645,14 @@ function extractHelperDocs(cls, sourceFile, source) {
             returnType = returnsMatch[1];
           }
         }
+        // Regex fallback for @param if TS API didn't find them
+        if (params.length === 0) {
+          const paramRegex = /@param\s+(?:\{([^}]+)\}\s+)?(\w+)(?:\s+-\s*(.*))?/g;
+          let pm;
+          while ((pm = paramRegex.exec(jsdocMatch[1])) !== null) {
+            params.push({ name: pm[2], type: pm[1] || undefined, description: pm[3] || undefined });
+          }
+        }
         const cleaned = jsdocMatch[1]
           .split("\n")
           .map(l => l.replace(/^\s*\*\s?/, "").trim())
@@ -630,12 +661,21 @@ function extractHelperDocs(cls, sourceFile, source) {
         if (cleaned) documentation = cleaned;
       }
 
-      // 3. Fallback: infer return type from the method body
+      // 3. Fallback: extract param names from the method signature itself
+      if (params.length === 0 && member.parameters.length > 0) {
+        for (const p of member.parameters) {
+          if (ts.isIdentifier(p.name)) {
+            params.push({ name: p.name.text, type: undefined, description: undefined });
+          }
+        }
+      }
+
+      // 4. Fallback: infer return type from the method body
       if (!returnType && member.body) {
         returnType = inferReturnType(member, sourceFile, source);
       }
 
-      docs.set(member.name.text, { returnType, documentation });
+      docs.set(member.name.text, { returnType, documentation, params: params.length > 0 ? params : undefined });
     }
   }
 

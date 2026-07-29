@@ -14,6 +14,15 @@ export class Index extends BlazeComponent {
     return false;
   }
 
+  /**
+   * @param {number} index
+   * @returns {boolean}
+   */
+  @Helper
+  isResourceAvailable(index) {
+    return index === 2;
+  }
+
   @Helper
   text() {
     return "download";

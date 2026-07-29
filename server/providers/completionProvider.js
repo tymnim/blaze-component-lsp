@@ -27,6 +27,9 @@ function getCompletions(index, filePath, source, line, column) {
 
   if (isInsidePartialTag(textBeforeCursor)) {
     if (isAfterPartialName(textBeforeCursor)) {
+      if (isAfterEquals(textBeforeCursor)) {
+        return getHelperAndDataCompletions(index, template.name);
+      }
       return getPartialHashCompletions(index, textBeforeCursor);
     }
     return getTemplateNameCompletions(index);
@@ -62,6 +65,25 @@ function isAfterPartialName(textBefore) {
   const afterOpen = textBefore.slice(lastOpen + 3);
   const trimmed = afterOpen.trimStart();
   return /\S\s/.test(trimmed);
+}
+
+/**
+ * Check if the cursor is after `=` in a partial's hash arguments (value position).
+ * e.g. `{{> myTemplate checked=` or `{{> myTemplate name=som`
+ * @param {string} textBefore
+ * @returns {boolean}
+ */
+function isAfterEquals(textBefore) {
+  const lastOpen = textBefore.lastIndexOf("{{>");
+  if (lastOpen === -1) return false;
+  const afterOpen = textBefore.slice(lastOpen + 3);
+  // Check if the last non-whitespace token before cursor ends with = or follows =
+  const lastEq = afterOpen.lastIndexOf("=");
+  if (lastEq === -1) return false;
+  const afterEq = afterOpen.slice(lastEq + 1);
+  // If there's no space after = (or only the value being typed), we're in value position
+  // If there's a complete value followed by a space, we're back in key position
+  return !/\S+\s+$/.test(afterEq);
 }
 
 /**
@@ -170,11 +192,30 @@ function getHelperAndDataCompletions(index, templateName) {
   const items = [];
 
   for (const helper of helpers) {
+    const paramSig = formatHelperParams(helper.params);
+    const returnSig = helper.returnType ? ` → ${helper.returnType}` : "";
+    const detail = `(${paramSig})${returnSig}`;
+
+    let documentation;
+    if (helper.documentation || (helper.params && helper.params.length > 0)) {
+      const parts = [];
+      if (helper.documentation) parts.push(helper.documentation);
+      if (helper.params && helper.params.length > 0) {
+        const paramLines = helper.params.map(p => {
+          const type = p.type ? `: \`${p.type}\`` : "";
+          const desc = p.description ? ` — ${p.description}` : "";
+          return `- \`${p.name}\`${type}${desc}`;
+        });
+        parts.push("**Params**\n\n" + paramLines.join("\n"));
+      }
+      documentation = { kind: "markdown", value: parts.join("\n\n") };
+    }
+
     items.push({
       label: helper.name,
       kind: CompletionItemKind.Function,
-      detail: helper.returnType ? `→ ${helper.returnType}` : "Helper (unknown type)",
-      documentation: helper.documentation || undefined,
+      detail,
+      documentation,
       data: { type: "helper", name: helper.name, templateName }
     });
   }
@@ -202,11 +243,22 @@ function getHelperAndDataCompletions(index, templateName) {
   return items;
 }
 
+/**
+ * Format helper params into a signature string.
+ * @param {import("../parsers/componentParser").HelperParam[]|undefined} params
+ * @returns {string}
+ */
+function formatHelperParams(params) {
+  if (!params || params.length === 0) return "";
+  return params.map(p => p.type ? `${p.name}: ${p.type}` : p.name).join(", ");
+}
+
 module.exports = {
   getCompletions,
   isInsidePartialTag,
   isInsideMustache,
   isAfterPartialName,
+  isAfterEquals,
   getTemplateNameCompletions,
   getHelperAndDataCompletions,
   getPartialHashCompletions
