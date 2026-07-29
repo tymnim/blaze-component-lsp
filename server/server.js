@@ -166,7 +166,12 @@ function createServer(connection) {
     const source = doc.getText();
     const { line, character } = params.position;
 
-    return getCompletions(projectIndex, filePath, source, line, character);
+    const result = getCompletions(projectIndex, filePath, source, line, character);
+    connection.console.log(`[completion] ${filePath}:${line}:${character} → ${result.length} items`);
+    for (const item of result.slice(0, 5)) {
+      connection.console.log(`[completion]   ${item.label}: detail="${item.detail}"`);
+    }
+    return result;
   });
 
   connection.onHover((params) => {

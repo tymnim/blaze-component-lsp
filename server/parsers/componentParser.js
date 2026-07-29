@@ -452,20 +452,132 @@ function findTypedefsFromJSDoc(sourceFile, source) {
  * @param {ts.SourceFile} sourceFile
  * @returns {ContextField[]}
  */
+/**
+ * Match `@extends BlazeComponent<...>` handling nested angle brackets.
+ * @param {string} text
+ * @returns {RegExpMatchArray|null} Match with capture group 1 = type parameter content
+ */
+function matchBalancedExtends(text) {
+  const marker = "@extends";
+  const idx = text.lastIndexOf(marker);
+  if (idx === -1) return null;
+
+  const after = text.slice(idx);
+  const openMatch = after.match(/@extends\s+BlazeComponent</);
+  if (!openMatch) return null;
+
+  const contentStart = idx + openMatch[0].length;
+  let depth = 1;
+  let i = contentStart;
+  while (i < text.length && depth > 0) {
+    if (text[i] === "<") depth++;
+    else if (text[i] === ">") depth--;
+    i++;
+  }
+
+  if (depth !== 0) return null;
+
+  const content = text.slice(contentStart, i - 1);
+  const result = [text.slice(idx, i), content];
+  result.index = idx;
+  result.input = text;
+  return result;
+}
+
 function resolveContextData(cls, typedefs, source, sourceFile) {
-  // Look for JSDoc comment above the class with @extends BlazeComponent<TypeName>
   const classStart = cls.node.getStart(sourceFile);
 
-  // Search backwards for the JSDoc comment
   const textBefore = source.slice(Math.max(0, classStart - 500), classStart);
-  const extendsMatch = textBefore.match(/@extends\s+BlazeComponent<(\w+)>/);
+  const extendsMatch = matchBalancedExtends(textBefore);
 
   if (extendsMatch) {
-    const typeName = extendsMatch[1];
-    return typedefs.get(typeName) || [];
+    const typeParam = extendsMatch[1].trim();
+
+    // Check if it's a known typedef name
+    const fromTypedef = typedefs.get(typeParam);
+    if (fromTypedef) return fromTypedef;
+
+    // Try to parse inline object type: { prop: Type, ... }
+    const inlineFields = parseInlineObjectType(typeParam);
+    if (inlineFields) return inlineFields;
+
+    // Primitive or complex non-object type
+    return [{
+      name: "data",
+      type: typeParam,
+      description: "Context data",
+      range: {
+        start: { line: 0, column: 0 },
+        end: { line: 0, column: 0 }
+      }
+    }];
   }
 
   return [];
+}
+
+/**
+ * Parse an inline object type like `{ foo: string, bar: number[] }` into ContextFields.
+ * Handles JSDoc comment artifacts (leading `*`) and multiline formatting.
+ * @param {string} raw
+ * @returns {ContextField[]|null}
+ */
+function parseInlineObjectType(raw) {
+  // Strip outer braces
+  const stripped = raw.replace(/^\s*\{/, "").replace(/\}\s*$/, "");
+  if (stripped === raw) return null;
+
+  // Clean JSDoc comment artifacts: leading ` * ` on each line
+  const cleaned = stripped
+    .split("\n")
+    .map(l => l.replace(/^\s*\*\s?/, "").trim())
+    .join(" ")
+    .trim();
+
+  if (!cleaned) return null;
+
+  /** @type {ContextField[]} */
+  const fields = [];
+  // Split on commas that are not inside angle brackets or nested braces
+  let depth = 0;
+  let current = "";
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (ch === "<" || ch === "{" || ch === "(") depth++;
+    else if (ch === ">" || ch === "}" || ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      const field = parseFieldEntry(current.trim());
+      if (field) fields.push(field);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) {
+    const field = parseFieldEntry(current.trim());
+    if (field) fields.push(field);
+  }
+
+  return fields.length > 0 ? fields : null;
+}
+
+/**
+ * Parse a single `name: Type` or `name?: Type` entry.
+ * @param {string} entry
+ * @returns {ContextField|null}
+ */
+function parseFieldEntry(entry) {
+  const match = entry.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(\??):\s*(.+)$/);
+  if (!match) return null;
+  const name = match[1];
+  const optional = match[2] === "?";
+  const type = optional ? `${match[3]} | undefined` : match[3];
+  return {
+    name,
+    type,
+    description: undefined,
+    range: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }
+  };
 }
 
 /**

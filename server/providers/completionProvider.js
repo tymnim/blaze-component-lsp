@@ -84,12 +84,50 @@ function isInsideMustache(textBefore) {
  * @returns {import("vscode-languageserver").CompletionItem[]}
  */
 function getTemplateNameCompletions(index) {
-  return index.getAllTemplateNames().map(name => ({
-    label: name,
-    kind: CompletionItemKind.Module,
-    detail: "Template",
-    data: { type: "template", name }
-  }));
+  return index.getAllTemplateNames().map(name => {
+    const component = index.getComponentForTemplate(name);
+    let detail = "Template";
+    let documentation;
+
+    if (component && component.contextDataFields.length > 0) {
+      const fields = component.contextDataFields;
+      const isSingleDataField = fields.length === 1 && fields[0].name === "data";
+
+      if (isSingleDataField) {
+        detail = `Template<${fields[0].type}>`;
+        documentation = {
+          kind: "markdown",
+          value: `\`${fields[0].type}\``
+        };
+      } else {
+        const inlineProps = fields.map(f => `${f.name}: ${f.type}`).join(", ");
+        const inlineType = `{${inlineProps}}`;
+
+        if (inlineType.length <= 200) {
+          detail = `Template<${inlineType}>`;
+        } else {
+          detail = "Template<ContextData>";
+        }
+
+        const docLines = fields.map(f => {
+          const desc = f.description ? ` — ${f.description}` : "";
+          return `- \`${f.name}\`: \`${f.type}\`${desc}`;
+        });
+        documentation = {
+          kind: "markdown",
+          value: "**ContextData**\n\n" + docLines.join("\n")
+        };
+      }
+    }
+
+    return {
+      label: name,
+      kind: CompletionItemKind.Module,
+      detail,
+      documentation,
+      data: { type: "template", name }
+    };
+  });
 }
 
 /**
