@@ -22,8 +22,11 @@ function getCompletions(index, filePath, source, line, column) {
 
   if (!template) return [];
 
-  const lineText = source.split("\n")[line] || "";
-  const textBeforeCursor = lineText.slice(0, column);
+  const lines = source.split("\n");
+  const lineText = lines[line] || "";
+  const textBeforeCursorOnLine = lineText.slice(0, column);
+
+  const textBeforeCursor = getTextBeforeCursorInExpression(lines, line, column);
 
   if (isInsidePartialTag(textBeforeCursor)) {
     if (isAfterPartialName(textBeforeCursor)) {
@@ -36,13 +39,16 @@ function getCompletions(index, filePath, source, line, column) {
   }
 
   if (isInsideBlockOpen(textBeforeCursor)) {
-    const blockStart = textBeforeCursor.lastIndexOf("{{#");
-    const nameStart = blockStart + 3;
-    const editRange = {
-      start: { line, character: nameStart },
-      end: { line, character: column }
-    };
-    return getBlockCompletions(index, template.name, editRange);
+    const blockStart = textBeforeCursorOnLine.lastIndexOf("{{#");
+    if (blockStart !== -1) {
+      const nameStart = blockStart + 3;
+      const editRange = {
+        start: { line, character: nameStart },
+        end: { line, character: column }
+      };
+      return getBlockCompletions(index, template.name, editRange);
+    }
+    return getBlockCompletions(index, template.name);
   }
 
   if (isInsideMustache(textBeforeCursor)) {
@@ -50,6 +56,36 @@ function getCompletions(index, filePath, source, line, column) {
   }
 
   return [];
+}
+
+/**
+ * Build the text before cursor spanning back to the nearest unclosed `{{` expression.
+ * This handles multiline partials/blocks.
+ * @param {string[]} lines
+ * @param {number} line
+ * @param {number} column
+ * @returns {string}
+ */
+function getTextBeforeCursorInExpression(lines, line, column) {
+  let result = lines[line].slice(0, column);
+
+  let depth = 0;
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (result[i] === "}" && i > 0 && result[i - 1] === "}") { depth++; i--; }
+    else if (result[i] === "{" && i > 0 && result[i - 1] === "{") { depth--; i--; if (depth < 0) return result; }
+  }
+
+  for (let l = line - 1; l >= Math.max(0, line - 30); l--) {
+    const prevLine = lines[l];
+    result = prevLine + "\n" + result;
+
+    for (let i = prevLine.length - 1; i >= 0; i--) {
+      if (prevLine[i] === "}" && i > 0 && prevLine[i - 1] === "}") { depth++; i--; }
+      else if (prevLine[i] === "{" && i > 0 && prevLine[i - 1] === "{") { depth--; i--; if (depth < 0) return result; }
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -87,13 +123,14 @@ function isAfterEquals(textBefore) {
   const lastOpen = textBefore.lastIndexOf("{{>");
   if (lastOpen === -1) return false;
   const afterOpen = textBefore.slice(lastOpen + 3);
-  // Check if the last non-whitespace token before cursor ends with = or follows =
   const lastEq = afterOpen.lastIndexOf("=");
   if (lastEq === -1) return false;
   const afterEq = afterOpen.slice(lastEq + 1);
-  // If there's no space after = (or only the value being typed), we're in value position
-  // If there's a complete value followed by a space, we're back in key position
-  return !/\S+\s+$/.test(afterEq);
+  // If afterEq contains a complete value (non-whitespace) followed by whitespace
+  // and then more text (or just whitespace), we're in key position
+  if (/\S+\s+\S/.test(afterEq)) return false;
+  if (/\S+\s+$/.test(afterEq)) return false;
+  return true;
 }
 
 /**
