@@ -35,6 +35,10 @@ function getCompletions(index, filePath, source, line, column) {
     return getTemplateNameCompletions(index);
   }
 
+  if (isInsideBlockOpen(textBeforeCursor)) {
+    return getBlockCompletions(index, template.name);
+  }
+
   if (isInsideMustache(textBeforeCursor)) {
     return getHelperAndDataCompletions(index, template.name);
   }
@@ -87,6 +91,18 @@ function isAfterEquals(textBefore) {
 }
 
 /**
+ * Check if the cursor is inside a `{{#...}}` block open expression.
+ * @param {string} textBefore
+ * @returns {boolean}
+ */
+function isInsideBlockOpen(textBefore) {
+  const lastOpen = textBefore.lastIndexOf("{{#");
+  if (lastOpen === -1) return false;
+  const closeAfterOpen = textBefore.indexOf("}}", lastOpen + 3);
+  return closeAfterOpen === -1;
+}
+
+/**
  * Check if the cursor is inside a `{{ ... }}` mustache expression.
  * @param {string} textBefore
  * @returns {boolean}
@@ -95,7 +111,7 @@ function isInsideMustache(textBefore) {
   const lastOpen = textBefore.lastIndexOf("{{");
   if (lastOpen === -1) return false;
   const afterOpen = textBefore.slice(lastOpen + 2);
-  if (afterOpen.startsWith(">") || afterOpen.startsWith("!") || afterOpen.startsWith("/")) return false;
+  if (afterOpen.startsWith(">") || afterOpen.startsWith("!") || afterOpen.startsWith("/") || afterOpen.startsWith("#")) return false;
   const closeAfterOpen = textBefore.indexOf("}}", lastOpen + 2);
   return closeAfterOpen === -1;
 }
@@ -106,9 +122,10 @@ function isInsideMustache(textBefore) {
  * @returns {import("vscode-languageserver").CompletionItem[]}
  */
 function getTemplateNameCompletions(index) {
-  return index.getAllTemplateNames().map(name => {
+  /** @type {import("vscode-languageserver").CompletionItem[]} */
+  const items = index.getAllTemplateNames().map(name => {
     const component = index.getComponentForTemplate(name);
-    let detail = "Template";
+    let detail = "Template<unknown>";
     let documentation;
 
     if (component && component.contextDataFields.length > 0) {
@@ -150,6 +167,41 @@ function getTemplateNameCompletions(index) {
       data: { type: "template", name }
     };
   });
+
+  items.push({
+    label: "Template.dynamic",
+    kind: CompletionItemKind.Module,
+    detail: "Template<{template: string, data: any}>",
+    documentation: {
+      kind: "markdown",
+      value: "Dynamically render a template by name.\n\n- `template`: `string` — template name to render\n- `data`: `any` — data context passed to the template"
+    },
+    data: { type: "builtin", name: "Template.dynamic" }
+  });
+
+  items.push({
+    label: "Template.contentBlock",
+    kind: CompletionItemKind.Module,
+    detail: "Block content",
+    documentation: {
+      kind: "markdown",
+      value: "Renders the content block passed to this block template.\n\n`{{#myBlock}}` **this content** `{{/myBlock}}`"
+    },
+    data: { type: "builtin", name: "Template.contentBlock" }
+  });
+
+  items.push({
+    label: "Template.elseBlock",
+    kind: CompletionItemKind.Module,
+    detail: "Else block content",
+    documentation: {
+      kind: "markdown",
+      value: "Renders the else block passed to this block template.\n\n`{{#myBlock}}...{{else}}` **this content** `{{/myBlock}}`"
+    },
+    data: { type: "builtin", name: "Template.elseBlock" }
+  });
+
+  return items;
 }
 
 /**
@@ -244,6 +296,87 @@ function getHelperAndDataCompletions(index, templateName) {
 }
 
 /**
+ * Get completions for `{{#...}}` — built-in block helpers + block templates.
+ * @param {ProjectIndex} index
+ * @param {string} currentTemplateName
+ * @returns {import("vscode-languageserver").CompletionItem[]}
+ */
+function getBlockCompletions(index, currentTemplateName) {
+  /** @type {import("vscode-languageserver").CompletionItem[]} */
+  const items = [];
+
+  for (const builtin of ["if", "unless", "each", "with", "let"]) {
+    items.push({
+      label: builtin,
+      kind: CompletionItemKind.Keyword,
+      detail: "Block helper",
+      data: { type: "builtin", name: builtin }
+    });
+  }
+
+  for (const name of index.getBlockTemplateNames()) {
+    const component = index.getComponentForTemplate(name);
+    const template = index.getTemplate(name);
+    const hasElse = template ? template.includedTemplates.includes("Template.elseBlock") : false;
+
+    let detail = "Block template<unknown>";
+    let documentation;
+
+    if (component && component.contextDataFields.length > 0) {
+      const fields = component.contextDataFields;
+      const isSingleDataField = fields.length === 1 && fields[0].name === "data";
+
+      if (isSingleDataField) {
+        detail = `Block template<${fields[0].type}>`;
+      } else {
+        const inlineProps = fields.map(f => `${f.name}: ${f.type}`).join(", ");
+        detail = inlineProps.length <= 150 ? `Block template<{${inlineProps}}>` : "Block template<ContextData>";
+      }
+    }
+
+    const docParts = [];
+    if (hasElse) docParts.push("Supports `{{else}}` block");
+    if (component && component.contextDataFields.length > 0) {
+      const fields = component.contextDataFields;
+      const isSingleDataField = fields.length === 1 && fields[0].name === "data";
+      if (!isSingleDataField) {
+        const docLines = fields.map(f => {
+          const desc = f.description ? ` — ${f.description}` : "";
+          return `- \`${f.name}\`: \`${f.type}\`${desc}`;
+        });
+        docParts.push("**ContextData**\n\n" + docLines.join("\n"));
+      }
+    }
+    if (docParts.length > 0) {
+      documentation = { kind: "markdown", value: docParts.join("\n\n") };
+    }
+
+    items.push({
+      label: name,
+      kind: CompletionItemKind.Snippet,
+      detail,
+      documentation,
+      data: { type: "blockTemplate", name }
+    });
+  }
+
+  // Also suggest helpers from the current template that could be used as block helpers
+  const { helpers } = index.getAvailableIdentifiers(currentTemplateName);
+  for (const helper of helpers) {
+    const paramSig = formatHelperParams(helper.params);
+    const returnSig = helper.returnType ? ` → ${helper.returnType}` : "";
+    items.push({
+      label: helper.name,
+      kind: CompletionItemKind.Function,
+      detail: `(${paramSig})${returnSig}`,
+      data: { type: "helper", name: helper.name, templateName: currentTemplateName }
+    });
+  }
+
+  return items;
+}
+
+/**
  * Format helper params into a signature string.
  * @param {import("../parsers/componentParser").HelperParam[]|undefined} params
  * @returns {string}
@@ -257,9 +390,11 @@ module.exports = {
   getCompletions,
   isInsidePartialTag,
   isInsideMustache,
+  isInsideBlockOpen,
   isAfterPartialName,
   isAfterEquals,
   getTemplateNameCompletions,
   getHelperAndDataCompletions,
-  getPartialHashCompletions
+  getPartialHashCompletions,
+  getBlockCompletions
 };

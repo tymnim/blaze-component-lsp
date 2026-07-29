@@ -7,6 +7,7 @@ const {
   getCompletions,
   isInsidePartialTag,
   isInsideMustache,
+  isInsideBlockOpen,
   isAfterPartialName
 } = require("../../server/providers/completionProvider");
 
@@ -30,7 +31,6 @@ describe("isInsideMustache", () => {
   it("should detect inside mustache", () => {
     assert.ok(isInsideMustache("  {{"));
     assert.ok(isInsideMustache("  {{name"));
-    assert.ok(isInsideMustache("  {{#if "));
   });
 
   it("should not detect outside mustache", () => {
@@ -38,10 +38,27 @@ describe("isInsideMustache", () => {
     assert.ok(!isInsideMustache("normal text"));
   });
 
-  it("should not detect inside partial/comment/close", () => {
+  it("should not detect inside partial/comment/close/block", () => {
     assert.ok(!isInsideMustache("  {{> "));
     assert.ok(!isInsideMustache("  {{! "));
     assert.ok(!isInsideMustache("  {{/ "));
+    assert.ok(!isInsideMustache("  {{#if "));
+  });
+});
+
+describe("isInsideBlockOpen", () => {
+  it("should detect inside block open", () => {
+    assert.ok(isInsideBlockOpen("  {{#"));
+    assert.ok(isInsideBlockOpen("  {{#if "));
+    assert.ok(isInsideBlockOpen("  {{#each item in"));
+    assert.ok(isInsideBlockOpen("  {{#require"));
+  });
+
+  it("should not detect outside block open", () => {
+    assert.ok(!isInsideBlockOpen("  {{#if}}"));
+    assert.ok(!isInsideBlockOpen("  {{name"));
+    assert.ok(!isInsideBlockOpen("  {{> partial"));
+    assert.ok(!isInsideBlockOpen("normal text"));
   });
 });
 

@@ -10,6 +10,7 @@ const {
 const { TextDocument } = require("vscode-languageserver-textdocument");
 
 const fs = require("node:fs");
+const path = require("node:path");
 const { ProjectIndex } = require("./indexer/projectIndex");
 const { getCompletions } = require("./providers/completionProvider");
 const { getHover } = require("./providers/hoverProvider");
@@ -31,8 +32,39 @@ function createServer(connection) {
   /** @type {Map<string, number>} meteorRoot → last refresh timestamp */
   const lastRefreshTimes = new Map();
 
+  /** @type {Map<string, object>} meteorRoot → config */
+  const projectConfigs = new Map();
+
   /** @type {ReturnType<typeof setTimeout>|null} */
   let diagnosticDebounce = null;
+
+  /**
+   * Read blaze-component-config.json from the Meteor root.
+   * @param {string} filePath
+   * @returns {{ errorOnTypeMismatch: boolean }}
+   */
+  function getConfigForFile(filePath) {
+    const meteorRoot = findMeteorRoot(filePath);
+    if (!meteorRoot) return { errorOnTypeMismatch: false };
+
+    const cached = projectConfigs.get(meteorRoot);
+    if (cached) return /** @type {any} */ (cached);
+
+    const configPath = path.join(meteorRoot, "blaze-component-config.json");
+    /** @type {{ errorOnTypeMismatch: boolean }} */
+    let config = { errorOnTypeMismatch: false };
+    try {
+      const raw = fs.readFileSync(configPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.errorOnTypeMismatch === "boolean") {
+        config.errorOnTypeMismatch = parsed.errorOnTypeMismatch;
+      }
+      connection.console.log(`[blaze-component-lsp] Loaded config from ${configPath}`);
+    } catch {}
+
+    projectConfigs.set(meteorRoot, config);
+    return config;
+  }
 
   /**
    * Get or create a ProjectIndex for the Meteor app containing the given file.
@@ -70,12 +102,26 @@ function createServer(connection) {
     }
   }
 
+  /**
+   * Force-refresh stale JS files, bypassing the debounce.
+   * Used before diagnostics to ensure type info is current.
+   * @param {string} filePath
+   * @param {ProjectIndex} index
+   */
+  function forceRefreshIndex(filePath, index) {
+    const meteorRoot = findMeteorRoot(filePath) || filePath;
+    lastRefreshTimes.set(meteorRoot, Date.now());
+    if (index.refreshStaleComponents()) {
+      connection.console.log(`[refresh] Re-indexed stale JS files for ${meteorRoot}`);
+    }
+  }
+
   connection.onInitialize(() => {
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Full,
         completionProvider: {
-          triggerCharacters: ["{", ">", " ", "="],
+          triggerCharacters: ["{", ">", "#", " ", "="],
           resolveProvider: false
         },
         hoverProvider: true,
@@ -119,6 +165,8 @@ function createServer(connection) {
     if (filePath.endsWith(".html")) {
       scheduleDiagnostics(change.document);
     } else if (filePath.endsWith(".js")) {
+      const meteorRoot = findMeteorRoot(filePath);
+      if (meteorRoot) lastRefreshTimes.delete(meteorRoot);
       scheduleHtmlDiagnosticsForIndex(index);
     }
   });
@@ -137,12 +185,41 @@ function createServer(connection) {
     connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
   });
 
+  // Periodically check for stale JS files and refresh diagnostics on open HTML docs.
+  // Covers editors that don't reliably send workspace/didChangeWatchedFiles.
+  setInterval(() => {
+    /** @type {Set<ProjectIndex>} */
+    const refreshedIndexes = new Set();
+    for (const doc of documents.all()) {
+      if (!doc.uri.endsWith(".html")) continue;
+      const filePath = uriToPath(doc.uri);
+      const index = getIndexForFile(filePath);
+      if (!index || refreshedIndexes.has(index)) continue;
+      refreshedIndexes.add(index);
+      if (index.refreshStaleComponents()) {
+        connection.console.log(`[poll] Detected stale JS files, refreshing diagnostics`);
+        scheduleHtmlDiagnosticsForIndex(index);
+      }
+    }
+  }, 2000);
+
   connection.onDidChangeWatchedFiles((params) => {
     /** @type {Set<ProjectIndex>} */
     const jsChangedIndexes = new Set();
 
     for (const change of params.changes) {
       const filePath = uriToPath(change.uri);
+      if (filePath.endsWith("blaze-component-config.json")) {
+        const meteorRoot = findMeteorRoot(filePath);
+        if (meteorRoot) {
+          projectConfigs.delete(meteorRoot);
+          connection.console.log(`[watch] Config invalidated for ${meteorRoot}`);
+          const index = projectIndexes.get(meteorRoot);
+          if (index) scheduleHtmlDiagnosticsForIndex(index);
+        }
+        continue;
+      }
+
       if (!filePath.endsWith(".html") && !filePath.endsWith(".js")) continue;
 
       const index = getIndexForFile(filePath);
@@ -161,7 +238,11 @@ function createServer(connection) {
         }
       }
 
-      if (filePath.endsWith(".js")) jsChangedIndexes.add(index);
+      if (filePath.endsWith(".js")) {
+        jsChangedIndexes.add(index);
+        const meteorRoot = findMeteorRoot(filePath);
+        if (meteorRoot) lastRefreshTimes.delete(meteorRoot);
+      }
     }
 
     for (const index of jsChangedIndexes) {
@@ -252,8 +333,10 @@ function createServer(connection) {
       const filePath = uriToPath(document.uri);
       const index = getIndexForFile(filePath);
       if (!index) return;
+      forceRefreshIndex(filePath, index);
       const source = document.getText();
-      const diagnostics = getDiagnostics(index, filePath, source);
+      const config = getConfigForFile(filePath);
+      const diagnostics = getDiagnostics(index, filePath, source, config);
       connection.sendDiagnostics({ uri: document.uri, diagnostics });
     }, 300);
   }
@@ -270,13 +353,19 @@ function createServer(connection) {
       clearTimeout(htmlDiagnosticDebounce);
     }
     htmlDiagnosticDebounce = setTimeout(() => {
+      let refreshed = false;
       for (const doc of documents.all()) {
         if (!doc.uri.endsWith(".html")) continue;
         const filePath = uriToPath(doc.uri);
         const index = getIndexForFile(filePath);
         if (index !== targetIndex) continue;
+        if (!refreshed) {
+          forceRefreshIndex(filePath, index);
+          refreshed = true;
+        }
         const source = doc.getText();
-        const diagnostics = getDiagnostics(index, filePath, source);
+        const config = getConfigForFile(filePath);
+        const diagnostics = getDiagnostics(index, filePath, source, config);
         connection.sendDiagnostics({ uri: doc.uri, diagnostics });
       }
     }, 500);

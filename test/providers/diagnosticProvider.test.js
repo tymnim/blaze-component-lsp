@@ -97,4 +97,85 @@ describe("getDiagnostics", () => {
     const templateDiags = diags.filter(d => d.message.includes("is not defined"));
     assert.equal(templateDiags.length, 0);
   });
+
+  it("should use Warning severity by default for type diagnostics", () => {
+    const noTypeJs = `
+      import "./noType.html";
+      /** @extends {BlazeComponent} */
+      @Component(Template.noType)
+      export class noType extends BlazeComponent {}
+    `;
+    index.updateFile("/test/noType.js", noTypeJs);
+    index.updateFile("/test/noType.html", '<template name="noType">hi</template>');
+
+    const wrapperJs = `
+      import "./wrapper.html";
+      /** @extends {BlazeComponent} */
+      @Component(Template.wrapper)
+      export class wrapper extends BlazeComponent {}
+    `;
+    index.updateFile("/test/wrapper.js", wrapperJs);
+
+    const source = '<template name="wrapper">\n  {{> noType prop="x"}}\n</template>';
+    index.updateFile("/test/wrapper.html", source);
+
+    const diags = getDiagnostics(index, "/test/wrapper.html", source);
+    const typeDiag = diags.find(d => d.message.includes("type is unknown"));
+    assert.ok(typeDiag, "should have a type diagnostic");
+    assert.equal(typeDiag.severity, 2, "default severity should be Warning (2)");
+  });
+
+  it("should use Error severity when errorOnTypeMismatch is true", () => {
+    const noTypeJs = `
+      import "./noType.html";
+      /** @extends {BlazeComponent} */
+      @Component(Template.noType)
+      export class noType extends BlazeComponent {}
+    `;
+    index.updateFile("/test/noType.js", noTypeJs);
+    index.updateFile("/test/noType.html", '<template name="noType">hi</template>');
+
+    const wrapperJs = `
+      import "./wrapper.html";
+      /** @extends {BlazeComponent} */
+      @Component(Template.wrapper)
+      export class wrapper extends BlazeComponent {}
+    `;
+    index.updateFile("/test/wrapper.js", wrapperJs);
+
+    const source = '<template name="wrapper">\n  {{> noType prop="x"}}\n</template>';
+    index.updateFile("/test/wrapper.html", source);
+
+    const diags = getDiagnostics(index, "/test/wrapper.html", source, { errorOnTypeMismatch: true });
+    const typeDiag = diags.find(d => d.message.includes("type is unknown"));
+    assert.ok(typeDiag, "should have a type diagnostic");
+    assert.equal(typeDiag.severity, 1, "severity should be Error (1) when errorOnTypeMismatch is true");
+  });
+
+  it("should use Warning severity when errorOnTypeMismatch is false", () => {
+    const noTypeJs = `
+      import "./noType.html";
+      /** @extends {BlazeComponent} */
+      @Component(Template.noType)
+      export class noType extends BlazeComponent {}
+    `;
+    index.updateFile("/test/noType.js", noTypeJs);
+    index.updateFile("/test/noType.html", '<template name="noType">hi</template>');
+
+    const wrapperJs = `
+      import "./wrapper.html";
+      /** @extends {BlazeComponent} */
+      @Component(Template.wrapper)
+      export class wrapper extends BlazeComponent {}
+    `;
+    index.updateFile("/test/wrapper.js", wrapperJs);
+
+    const source = '<template name="wrapper">\n  {{> noType prop="x"}}\n</template>';
+    index.updateFile("/test/wrapper.html", source);
+
+    const diags = getDiagnostics(index, "/test/wrapper.html", source, { errorOnTypeMismatch: false });
+    const typeDiag = diags.find(d => d.message.includes("type is unknown"));
+    assert.ok(typeDiag, "should have a type diagnostic");
+    assert.equal(typeDiag.severity, 2, "severity should be Warning (2) when errorOnTypeMismatch is false");
+  });
 });

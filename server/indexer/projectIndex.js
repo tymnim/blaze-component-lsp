@@ -86,13 +86,37 @@ class ProjectIndex {
    */
   getAvailableIdentifiers(templateName) {
     const component = this.componentIndexer.getComponent(templateName);
-    if (!component) {
-      return { helpers: [], contextFields: [] };
-    }
+    const componentHelpers = component ? component.helpers : [];
+    const contextFields = component ? component.contextDataFields : [];
+    const globalHelpers = this.getGlobalHelpers();
     return {
-      helpers: component.helpers,
-      contextFields: component.contextDataFields
+      helpers: [...componentHelpers, ...globalHelpers],
+      contextFields
     };
+  }
+
+  /**
+   * Get all global helpers as HelperInfo-compatible objects.
+   * @returns {import("../parsers/componentParser").HelperInfo[]}
+   */
+  getGlobalHelpers() {
+    return Array.from(this.componentIndexer.globalHelpers.values()).map(g => ({
+      name: g.name,
+      methodName: g.name,
+      range: g.range,
+      returnType: g.returnType,
+      documentation: g.documentation ? `(global) ${g.documentation}` : "(global helper)",
+      params: g.params
+    }));
+  }
+
+  /**
+   * Get a global helper by name.
+   * @param {string} name
+   * @returns {import("../parsers/componentParser").GlobalHelperInfo|undefined}
+   */
+  getGlobalHelper(name) {
+    return this.componentIndexer.globalHelpers.get(name);
   }
 
   /**
@@ -119,6 +143,14 @@ class ProjectIndex {
    */
   getAllTemplateNames() {
     return this.templateIndexer.getAllTemplateNames();
+  }
+
+  /**
+   * Get all block template names (templates that use Template.contentBlock/elseBlock).
+   * @returns {string[]}
+   */
+  getBlockTemplateNames() {
+    return this.templateIndexer.getBlockTemplateNames();
   }
 
   /**

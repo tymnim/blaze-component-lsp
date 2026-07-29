@@ -11,7 +11,8 @@
   "categories": ["Programming Languages"],
   "activationEvents": [
     "onLanguage:html",
-    "workspaceContains:.meteor"
+    "workspaceContains:.meteor",
+    "workspaceContains:**/.meteor"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -31,6 +32,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable/disable the Blaze Component LSP server."
+        },
+        "blazeComponentLsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the LSP server index.js. Leave empty to auto-detect."
         },
         "blazeComponentLsp.trace.server": {
           "type": "string",

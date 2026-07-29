@@ -1,10 +1,11 @@
 // @ts-check
 const fs = require("node:fs");
 const path = require("node:path");
-const { parseComponent } = require("../parsers/componentParser");
+const { parseComponent, findGlobalHelpers } = require("../parsers/componentParser");
 
 /**
  * @typedef {import("../parsers/componentParser").ComponentInfo} ComponentInfo
+ * @typedef {import("../parsers/componentParser").GlobalHelperInfo} GlobalHelperInfo
  */
 
 class ComponentIndexer {
@@ -15,6 +16,10 @@ class ComponentIndexer {
     this.fileComponents = new Map();
     /** @type {Map<string, number>} filePath → mtime (ms) when last indexed */
     this._mtimes = new Map();
+    /** @type {Map<string, GlobalHelperInfo>} helperName → GlobalHelperInfo */
+    this.globalHelpers = new Map();
+    /** @type {Map<string, GlobalHelperInfo[]>} filePath → GlobalHelperInfo[] */
+    this._fileGlobalHelpers = new Map();
   }
 
   /**
@@ -45,6 +50,12 @@ class ComponentIndexer {
       this.components.set(comp.templateName, comp);
     }
     this.fileComponents.set(filePath, components);
+
+    const globals = findGlobalHelpers(source, filePath);
+    for (const g of globals) {
+      this.globalHelpers.set(g.name, g);
+    }
+    this._fileGlobalHelpers.set(filePath, globals);
   }
 
   /**
@@ -76,6 +87,13 @@ class ComponentIndexer {
         this.components.delete(comp.templateName);
       }
       this.fileComponents.delete(filePath);
+    }
+    const existingGlobals = this._fileGlobalHelpers.get(filePath);
+    if (existingGlobals) {
+      for (const g of existingGlobals) {
+        this.globalHelpers.delete(g.name);
+      }
+      this._fileGlobalHelpers.delete(filePath);
     }
   }
 

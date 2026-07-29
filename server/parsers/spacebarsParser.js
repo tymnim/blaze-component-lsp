@@ -29,6 +29,7 @@
  * @prop {number} contentStartColumn - 0-based column where the content starts
  * @prop {SpacebarsNode[]} expressions
  * @prop {string[]} includedTemplates
+ * @prop {boolean} isBlockTemplate
  */
 
 /**
@@ -42,6 +43,9 @@ function parseHTML(source, filePath) {
   for (const template of templates) {
     template.expressions = parseSpacebarsExpressions(template.content, template.contentStartLine, template.contentStartColumn);
     template.includedTemplates = extractIncludedTemplates(template.expressions);
+    template.isBlockTemplate = template.includedTemplates.some(
+      name => name === "Template.contentBlock" || name === "Template.elseBlock"
+    );
   }
   return templates;
 }
@@ -78,7 +82,8 @@ function extractTemplateBlocks(source) {
       contentStartLine: contentStartPos.line,
       contentStartColumn: contentStartPos.column,
       expressions: [],
-      includedTemplates: []
+      includedTemplates: [],
+      isBlockTemplate: false
     });
   }
 
@@ -267,10 +272,26 @@ function parseExpressionContent(inner, type, exprStart, exprEnd, content, baseLi
   const tokens = tokenizeExpression(inner);
   const path = tokens.length > 0 ? tokens[0] : "";
 
+  const innerStart = content.indexOf(inner, exprStart);
+
+  /**
+   * Find the offset of a token within content by searching from innerStart.
+   * Uses a search cursor to handle duplicate tokens correctly.
+   * @param {string} token
+   * @param {number} searchFrom
+   * @returns {number}
+   */
+  function findTokenOffset(token, searchFrom) {
+    const idx = content.indexOf(token, searchFrom);
+    return idx !== -1 ? idx : exprStart;
+  }
+
   /** @type {SpacebarsParam[]} */
   const params = [];
   /** @type {Object<string, SpacebarsParam>} */
   const hash = {};
+
+  let searchCursor = innerStart;
 
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i];
@@ -278,20 +299,30 @@ function parseExpressionContent(inner, type, exprStart, exprEnd, content, baseLi
       const eqIdx = token.indexOf('=');
       const key = token.slice(0, eqIdx);
       const val = token.slice(eqIdx + 1);
-      hash[key] = classifyParam(val, exprStart, content, baseLine, baseColumn);
+      const tokenOffset = findTokenOffset(token, searchCursor);
+      const valOffset = tokenOffset + eqIdx + 1;
+      searchCursor = tokenOffset + token.length;
+      hash[key] = classifyParam(val, valOffset, content, baseLine, baseColumn);
     } else if (token.startsWith('(') && token.endsWith(')')) {
       const subInner = token.slice(1, -1).trim();
       const subTokens = tokenizeExpression(subInner);
-      const subParams = subTokens.slice(1).map(t => classifyParam(t, exprStart, content, baseLine, baseColumn));
+      const tokenOffset = findTokenOffset(token, searchCursor);
+      searchCursor = tokenOffset + token.length;
+      const subParams = subTokens.slice(1).map(t => {
+        const tOff = findTokenOffset(t, tokenOffset);
+        return classifyParam(t, tOff, content, baseLine, baseColumn);
+      });
       params.push({
         type: "SubExpression",
         value: subTokens[0] || "",
-        loc: offsetToRange(content, exprStart, exprEnd, baseLine, baseColumn),
+        loc: offsetToRange(content, tokenOffset, tokenOffset + token.length, baseLine, baseColumn),
         params: subParams,
         hash: {}
       });
     } else {
-      params.push(classifyParam(token, exprStart, content, baseLine, baseColumn));
+      const tokenOffset = findTokenOffset(token, searchCursor);
+      searchCursor = tokenOffset + token.length;
+      params.push(classifyParam(token, tokenOffset, content, baseLine, baseColumn));
     }
   }
 

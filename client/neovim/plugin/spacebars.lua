@@ -42,6 +42,10 @@ local function apply_spacebars_highlights(bufnr)
     vim.fn.matchadd("SpacebarsKeyword", "\\<\\(if\\|unless\\|each\\|with\\|let\\|else\\|in\\)\\>}}", p)
     vim.fn.matchadd("SpacebarsKeyword", "{{/\\w\\+}}", p)
 
+    -- Block open/close for custom block templates ({{#name ...}} / {{/name}})
+    vim.fn.matchadd("SpacebarsPartial", "{{#[A-Za-z_][A-Za-z0-9_]*", p)
+    vim.fn.matchadd("SpacebarsPartial", "{{/[A-Za-z_][A-Za-z0-9_]*}}", p)
+
     vim.fn.matchadd("SpacebarsPartial", "{{>\\s*[A-Za-z_.][A-Za-z0-9_.]*", p)
 
     vim.fn.matchadd("SpacebarsHelper", "{{\\ze[^!>#/{]", p)

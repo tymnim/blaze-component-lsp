@@ -80,6 +80,19 @@ class TemplateIndexer {
   }
 
   /**
+   * Get all block template names (templates using Template.contentBlock or Template.elseBlock).
+   * @returns {string[]}
+   */
+  getBlockTemplateNames() {
+    /** @type {string[]} */
+    const names = [];
+    for (const [name, tpl] of this.templates) {
+      if (tpl.isBlockTemplate) names.push(name);
+    }
+    return names;
+  }
+
+  /**
    * Get total template count.
    * @returns {number}
    */

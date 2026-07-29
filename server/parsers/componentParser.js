@@ -39,6 +39,14 @@ const ts = require("typescript");
  * @prop {string|null} parentClass
  * @prop {string|null} htmlImportPath
  * @prop {SourceRange} classRange
+ *
+ * @typedef {Object} GlobalHelperInfo
+ * @prop {string} name
+ * @prop {string} filePath
+ * @prop {SourceRange} range
+ * @prop {string} [returnType]
+ * @prop {string} [documentation]
+ * @prop {HelperParam[]} [params]
  */
 
 /**
@@ -824,8 +832,163 @@ function getLineAndColumn(source, offset) {
   return { line, column: offset - lastNewline - 1 };
 }
 
+/**
+ * Find Blaze.registerHelper() calls in a source file.
+ * @param {string} source
+ * @param {string} filePath
+ * @returns {GlobalHelperInfo[]}
+ */
+function findGlobalHelpers(source, filePath) {
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  /** @type {GlobalHelperInfo[]} */
+  const helpers = [];
+
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "registerHelper" &&
+      ts.isIdentifier(node.expression.expression) &&
+      (node.expression.expression.text === "Blaze" || node.expression.expression.text === "Template")
+    ) {
+      const args = node.arguments;
+      if (args.length >= 2 && ts.isStringLiteral(args[0])) {
+        const name = args[0].text;
+        const start = getLineAndColumn(source, node.getStart(sourceFile));
+        const end = getLineAndColumn(source, node.getEnd());
+        const range = { start, end };
+
+        /** @type {string|undefined} */
+        let returnType;
+        /** @type {HelperParam[]} */
+        const params = [];
+
+        const fn = args[1];
+        if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+          for (const p of fn.parameters) {
+            const pName = p.name.getText(sourceFile);
+            const jsDocType = ts.getJSDocType(p);
+            const pType = jsDocType ? jsDocType.getText(sourceFile) : undefined;
+            params.push({ name: pName, type: pType });
+          }
+
+          const jsDocReturn = getJSDocReturnType(fn, sourceFile);
+          if (jsDocReturn) {
+            returnType = jsDocReturn;
+          } else if (fn.body) {
+            if (ts.isBlock(fn.body)) {
+              returnType = inferReturnType(fn, sourceFile, source);
+            } else {
+              returnType = inferSimpleReturnType(fn.body, sourceFile);
+            }
+          }
+        }
+
+        let documentation;
+        const jsDocComments = ts.getJSDocCommentsAndTags(node);
+        for (const jd of jsDocComments) {
+          if (ts.isJSDoc(jd) && jd.comment) {
+            documentation = typeof jd.comment === "string" ? jd.comment : jd.comment.map(c => c.text || "").join("");
+            break;
+          }
+        }
+
+        helpers.push({ name, filePath, range, returnType, documentation, params: params.length > 0 ? params : undefined });
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return helpers;
+}
+
+/**
+ * Get @returns type from JSDoc on a node.
+ * @param {import("typescript").Node} node
+ * @param {import("typescript").SourceFile} sourceFile
+ * @returns {string|undefined}
+ */
+function getJSDocReturnType(node, sourceFile) {
+  const jsDocs = ts.getJSDocTags(node);
+  for (const tag of jsDocs) {
+    if (tag.tagName.text === "returns" || tag.tagName.text === "return") {
+      if (tag.typeExpression) {
+        return tag.typeExpression.type.getText(sourceFile);
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Infer a simple return type from an expression body.
+ * @param {import("typescript").Expression} expr
+ * @param {import("typescript").SourceFile} sourceFile
+ * @returns {string|undefined}
+ */
+function inferSimpleReturnType(expr, sourceFile) {
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return "string";
+  if (ts.isTemplateExpression(expr)) return "string";
+  if (ts.isNumericLiteral(expr)) return "number";
+  if (expr.kind === ts.SyntaxKind.TrueKeyword || expr.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
+  if (ts.isArrayLiteralExpression(expr)) return "Array";
+  if (ts.isObjectLiteralExpression(expr)) return "Object";
+  if (expr.kind === ts.SyntaxKind.NullKeyword) return "null";
+
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    const COMPARISON_OPS = [
+      ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken,
+      ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken,
+      ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken,
+      ts.SyntaxKind.InstanceOfKeyword, ts.SyntaxKind.InKeyword,
+    ];
+    const LOGICAL_OPS = [
+      ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken,
+    ];
+    if (COMPARISON_OPS.includes(op)) return "boolean";
+    if (LOGICAL_OPS.includes(op)) {
+      const left = inferSimpleReturnType(expr.left, sourceFile);
+      const right = inferSimpleReturnType(expr.right, sourceFile);
+      if (left && left === right) return left;
+    }
+    const ARITHMETIC_OPS = [
+      ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken,
+      ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken,
+      ts.SyntaxKind.PercentToken,
+    ];
+    if (ARITHMETIC_OPS.includes(op)) {
+      const left = inferSimpleReturnType(expr.left, sourceFile);
+      const right = inferSimpleReturnType(expr.right, sourceFile);
+      if (op === ts.SyntaxKind.PlusToken && (left === "string" || right === "string")) return "string";
+      return "number";
+    }
+  }
+
+  if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
+    return "boolean";
+  }
+
+  if (ts.isConditionalExpression(expr)) {
+    const t = inferSimpleReturnType(expr.whenTrue, sourceFile);
+    const f = inferSimpleReturnType(expr.whenFalse, sourceFile);
+    if (t && t === f) return t;
+    if (t) return t;
+  }
+
+  if (ts.isParenthesizedExpression(expr)) {
+    return inferSimpleReturnType(expr.expression, sourceFile);
+  }
+
+  return undefined;
+}
+
 module.exports = {
   parseComponent,
+  findGlobalHelpers,
   findClasses,
   findExplicitRegistrations,
   findHTMLImports,
