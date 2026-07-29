@@ -135,7 +135,7 @@ function getHelperAndDataCompletions(index, templateName) {
     items.push({
       label: helper.name,
       kind: CompletionItemKind.Function,
-      detail: helper.returnType ? `→ ${helper.returnType}` : "Helper",
+      detail: helper.returnType ? `→ ${helper.returnType}` : "Helper (unknown type)",
       documentation: helper.documentation || undefined,
       data: { type: "helper", name: helper.name, templateName }
     });

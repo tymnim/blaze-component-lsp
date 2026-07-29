@@ -481,29 +481,35 @@ function extractHelperDocs(cls, sourceFile, source) {
 
   for (const member of cls.node.members) {
     if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
-      const jsDocNodes = ts.getJSDocTags(member);
       let returnType;
       let documentation;
 
+      // 1. Try TS API JSDoc tags
+      const jsDocNodes = ts.getJSDocTags(member);
       for (const tag of jsDocNodes) {
         if (tag.tagName.text === "returns" || tag.tagName.text === "return") {
-          if (tag.comment) {
-            returnType = typeof tag.comment === "string" ? tag.comment : tag.comment.map(c => c.text).join("");
-          }
-          // Also check for type in the tag
           const typeExpr = /** @type {any} */ (tag).typeExpression;
           if (typeExpr && typeExpr.type) {
             returnType = source.slice(typeExpr.type.pos, typeExpr.type.end).trim();
           }
+          if (!returnType && tag.comment) {
+            returnType = typeof tag.comment === "string" ? tag.comment : tag.comment.map(c => c.text).join("");
+          }
         }
       }
 
-      // Get the leading JSDoc comment
+      // 2. Fallback: regex on the raw JSDoc comment for @returns {type}
       const fullStart = member.getFullStart();
       const start = member.getStart(sourceFile);
       const leadingText = source.slice(fullStart, start);
       const jsdocMatch = leadingText.match(/\/\*\*([\s\S]*?)\*\//);
       if (jsdocMatch) {
+        if (!returnType) {
+          const returnsMatch = jsdocMatch[1].match(/@returns?\s+\{([^}]+)\}/);
+          if (returnsMatch) {
+            returnType = returnsMatch[1];
+          }
+        }
         const cleaned = jsdocMatch[1]
           .split("\n")
           .map(l => l.replace(/^\s*\*\s?/, "").trim())
@@ -512,13 +518,80 @@ function extractHelperDocs(cls, sourceFile, source) {
         if (cleaned) documentation = cleaned;
       }
 
-      if (returnType || documentation) {
-        docs.set(member.name.text, { returnType, documentation });
+      // 3. Fallback: infer return type from the method body
+      if (!returnType && member.body) {
+        returnType = inferReturnType(member, sourceFile, source);
       }
+
+      docs.set(member.name.text, { returnType, documentation });
     }
   }
 
   return docs;
+}
+
+/**
+ * Infer a return type from simple method bodies.
+ * @param {ts.MethodDeclaration} method
+ * @param {ts.SourceFile} sourceFile
+ * @param {string} source
+ * @returns {string|undefined}
+ */
+function inferReturnType(method, sourceFile, source) {
+  const body = method.body;
+  if (!body || !body.statements.length) return undefined;
+
+  for (const stmt of body.statements) {
+    if (!ts.isReturnStatement(stmt) || !stmt.expression) continue;
+    const expr = stmt.expression;
+
+    if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return "string";
+    if (ts.isNumericLiteral(expr)) return "number";
+    if (expr.kind === ts.SyntaxKind.TrueKeyword || expr.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
+    if (ts.isArrayLiteralExpression(expr)) return "Array";
+    if (ts.isObjectLiteralExpression(expr)) return "Object";
+    if (expr.kind === ts.SyntaxKind.NullKeyword) return "null";
+
+    // this.get("key") ? "a" : "b" → string
+    if (ts.isConditionalExpression(expr)) {
+      const whenTrue = expr.whenTrue;
+      const whenFalse = expr.whenFalse;
+      if (ts.isStringLiteral(whenTrue) && ts.isStringLiteral(whenFalse)) return "string";
+      if (ts.isNumericLiteral(whenTrue) && ts.isNumericLiteral(whenFalse)) return "number";
+    }
+
+    // this.get("key") → look at the key name for hints
+    if (ts.isCallExpression(expr)) {
+      const callText = source.slice(expr.expression.pos, expr.expression.end).trim();
+      if (callText === "this.get") return undefined; // generic state access
+      if (callText === "this.reactiveData" || callText === "this.nonReactiveData") return "ContextData";
+      if (callText.endsWith(".get")) return undefined;
+    }
+
+    // this.checked.get() ? "checked" : "unchecked" → string (ternary with call)
+    if (ts.isConditionalExpression(expr)) {
+      const inferredTrue = inferExprType(expr.whenTrue);
+      const inferredFalse = inferExprType(expr.whenFalse);
+      if (inferredTrue && inferredTrue === inferredFalse) return inferredTrue;
+      if (inferredTrue) return inferredTrue;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Infer type of a simple expression node.
+ * @param {ts.Expression} expr
+ * @returns {string|undefined}
+ */
+function inferExprType(expr) {
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return "string";
+  if (ts.isNumericLiteral(expr)) return "number";
+  if (expr.kind === ts.SyntaxKind.TrueKeyword || expr.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
+  if (ts.isArrayLiteralExpression(expr)) return "Array";
+  if (ts.isObjectLiteralExpression(expr)) return "Object";
+  return undefined;
 }
 
 /**

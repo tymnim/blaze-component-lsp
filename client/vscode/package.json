@@ -15,6 +15,14 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "grammars": [
+      {
+        "scopeName": "text.html.spacebars",
+        "path": "./syntaxes/spacebars.tmLanguage.json",
+        "injectTo": ["text.html.basic", "text.html.derivative"],
+        "embeddedLanguages": {}
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "Blaze Component LSP",

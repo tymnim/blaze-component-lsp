@@ -62,6 +62,14 @@ class ProjectIndex {
   }
 
   /**
+   * Re-index any JS files that have changed on disk since last indexed.
+   * @returns {boolean} true if anything was refreshed
+   */
+  refreshStaleComponents() {
+    return this.componentIndexer.refreshStaleFiles();
+  }
+
+  /**
    * Get all available identifiers for a template (helpers + context data fields).
    * @param {string} templateName
    * @returns {{ helpers: HelperInfo[], contextFields: ContextField[] }}

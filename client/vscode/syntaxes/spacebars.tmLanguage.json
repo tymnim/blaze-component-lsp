@@ -1,0 +1,161 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "text.html.spacebars",
+  "name": "Spacebars HTML",
+  "injectionSelector": "L:text.html -comment",
+  "patterns": [
+    { "include": "#raw-expression" },
+    { "include": "#comment-block" },
+    { "include": "#block-close" },
+    { "include": "#block-open" },
+    { "include": "#partial-expression" },
+    { "include": "#mustache-expression" }
+  ],
+  "repository": {
+    "comment-block": {
+      "name": "comment.block.spacebars",
+      "begin": "\\{\\{!--",
+      "end": "--\\}\\}",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.spacebars" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.end.spacebars" } }
+    },
+    "raw-expression": {
+      "name": "meta.expression.raw.spacebars",
+      "begin": "(\\{\\{\\{)\\s*",
+      "end": "\\s*(\\}\\}\\})",
+      "beginCaptures": { "1": { "name": "punctuation.definition.expression.begin.spacebars" } },
+      "endCaptures": { "1": { "name": "punctuation.definition.expression.end.spacebars" } },
+      "patterns": [
+        { "include": "#expression-contents" }
+      ]
+    },
+    "block-close": {
+      "name": "meta.block.close.spacebars",
+      "match": "(\\{\\{)(/)(\\w+)(\\}\\})",
+      "captures": {
+        "1": { "name": "punctuation.definition.expression.begin.spacebars" },
+        "2": { "name": "keyword.operator.close.spacebars" },
+        "3": { "name": "keyword.control.spacebars" },
+        "4": { "name": "punctuation.definition.expression.end.spacebars" }
+      }
+    },
+    "block-open": {
+      "name": "meta.block.open.spacebars",
+      "begin": "(\\{\\{)(#|else\\s+if\\b)",
+      "end": "(\\}\\})",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.expression.begin.spacebars" },
+        "2": { "name": "keyword.operator.block.spacebars" }
+      },
+      "endCaptures": { "1": { "name": "punctuation.definition.expression.end.spacebars" } },
+      "patterns": [
+        { "include": "#block-keyword" },
+        { "include": "#expression-contents" }
+      ]
+    },
+    "block-keyword": {
+      "match": "\\b(if|unless|each|with|let|else)\\b",
+      "name": "keyword.control.spacebars"
+    },
+    "partial-expression": {
+      "name": "meta.expression.partial.spacebars",
+      "begin": "(\\{\\{)(>)\\s*",
+      "end": "\\s*(\\}\\})",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.expression.begin.spacebars" },
+        "2": { "name": "keyword.operator.partial.spacebars" }
+      },
+      "endCaptures": { "1": { "name": "punctuation.definition.expression.end.spacebars" } },
+      "patterns": [
+        { "include": "#template-dynamic" },
+        { "include": "#partial-name" },
+        { "include": "#expression-contents" }
+      ]
+    },
+    "template-dynamic": {
+      "match": "(Template\\.dynamic)\\b",
+      "name": "support.class.template.spacebars"
+    },
+    "partial-name": {
+      "match": "(?<=\\>\\s{0,4})([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "name": "entity.name.tag.partial.spacebars"
+    },
+    "mustache-expression": {
+      "name": "meta.expression.mustache.spacebars",
+      "begin": "(\\{\\{)(?![!>{/#])",
+      "end": "(\\}\\})",
+      "beginCaptures": { "1": { "name": "punctuation.definition.expression.begin.spacebars" } },
+      "endCaptures": { "1": { "name": "punctuation.definition.expression.end.spacebars" } },
+      "patterns": [
+        { "include": "#expression-contents" }
+      ]
+    },
+    "expression-contents": {
+      "patterns": [
+        { "include": "#string-double" },
+        { "include": "#string-single" },
+        { "include": "#number" },
+        { "include": "#boolean" },
+        { "include": "#in-keyword" },
+        { "include": "#key-value" },
+        { "include": "#sub-expression" },
+        { "include": "#dotted-path" },
+        { "include": "#identifier" }
+      ]
+    },
+    "string-double": {
+      "name": "string.quoted.double.spacebars",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.spacebars" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.spacebars" } }
+    },
+    "string-single": {
+      "name": "string.quoted.single.spacebars",
+      "begin": "'",
+      "end": "'",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.spacebars" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.spacebars" } }
+    },
+    "number": {
+      "match": "\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.spacebars"
+    },
+    "boolean": {
+      "match": "\\b(true|false|null|undefined)\\b",
+      "name": "constant.language.spacebars"
+    },
+    "in-keyword": {
+      "match": "\\b(in)\\b",
+      "name": "keyword.operator.in.spacebars"
+    },
+    "key-value": {
+      "match": "([A-Za-z_][A-Za-z0-9_]*)\\s*(=)",
+      "captures": {
+        "1": { "name": "variable.parameter.spacebars" },
+        "2": { "name": "keyword.operator.assignment.spacebars" }
+      }
+    },
+    "sub-expression": {
+      "name": "meta.sub-expression.spacebars",
+      "begin": "\\(",
+      "end": "\\)",
+      "beginCaptures": { "0": { "name": "punctuation.section.parens.begin.spacebars" } },
+      "endCaptures": { "0": { "name": "punctuation.section.parens.end.spacebars" } },
+      "patterns": [
+        { "include": "#expression-contents" }
+      ]
+    },
+    "dotted-path": {
+      "match": "([A-Za-z_][A-Za-z0-9_]*)((?:\\.[A-Za-z_][A-Za-z0-9_]*)+)",
+      "captures": {
+        "1": { "name": "variable.other.object.spacebars" },
+        "2": { "name": "variable.other.property.spacebars" }
+      }
+    },
+    "identifier": {
+      "match": "[A-Za-z_@][A-Za-z0-9_]*",
+      "name": "variable.other.spacebars"
+    }
+  }
+}

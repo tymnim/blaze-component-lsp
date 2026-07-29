@@ -9,6 +9,7 @@ const {
 } = require("vscode-languageserver/node");
 const { TextDocument } = require("vscode-languageserver-textdocument");
 
+const fs = require("node:fs");
 const { ProjectIndex } = require("./indexer/projectIndex");
 const { getCompletions } = require("./providers/completionProvider");
 const { getHover } = require("./providers/hoverProvider");
@@ -66,6 +67,20 @@ function createServer(connection) {
 
   connection.onInitialized(() => {
     connection.console.log("[blaze-component-lsp] Server initialized");
+
+    connection.client.register(
+      require("vscode-languageserver").DidChangeWatchedFilesNotification.type,
+      {
+        watchers: [
+          { globPattern: "**/*.js" },
+          { globPattern: "**/*.html" }
+        ]
+      }
+    ).then(() => {
+      connection.console.log("[blaze-component-lsp] Registered file watchers");
+    }).catch((err) => {
+      connection.console.log(`[blaze-component-lsp] File watcher registration failed: ${err}`);
+    });
   });
 
   documents.onDidChangeContent((change) => {
@@ -73,9 +88,17 @@ function createServer(connection) {
     const filePath = uriToPath(uri);
     const source = change.document.getText();
 
-    if (filePath.endsWith(".html") && projectIndex) {
+    if (!projectIndex) return;
+
+    if (filePath.endsWith(".html") || filePath.endsWith(".js")) {
       projectIndex.updateFile(filePath, source);
+      connection.console.log(`[sync] Re-indexed ${filePath}`);
+    }
+
+    if (filePath.endsWith(".html")) {
       scheduleDiagnostics(change.document);
+    } else if (filePath.endsWith(".js")) {
+      scheduleAllHtmlDiagnostics();
     }
   });
 
@@ -89,34 +112,67 @@ function createServer(connection) {
     connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
   });
 
+  connection.onDidChangeWatchedFiles((params) => {
+    if (!projectIndex) return;
+
+    let jsChanged = false;
+    for (const change of params.changes) {
+      const filePath = uriToPath(change.uri);
+      if (!filePath.endsWith(".html") && !filePath.endsWith(".js")) continue;
+
+      if (change.type === 3 /* Deleted */) {
+        projectIndex.removeFile(filePath);
+        connection.console.log(`[watch] Removed ${filePath}`);
+      } else {
+        try {
+          const source = fs.readFileSync(filePath, "utf-8");
+          projectIndex.updateFile(filePath, source);
+          connection.console.log(`[watch] Re-indexed ${filePath}`);
+        } catch (err) {
+          connection.console.log(`[watch] Failed to read ${filePath}: ${err}`);
+        }
+      }
+
+      if (filePath.endsWith(".js")) jsChanged = true;
+    }
+
+    if (jsChanged) {
+      scheduleAllHtmlDiagnostics();
+    }
+  });
+
+  /**
+   * Refresh stale JS files before serving a request.
+   * Debounced: skips if checked within the last second.
+   */
+  let lastRefresh = 0;
+  function ensureFreshIndex() {
+    const now = Date.now();
+    if (now - lastRefresh < 1000) return;
+    lastRefresh = now;
+    if (projectIndex && projectIndex.refreshStaleComponents()) {
+      connection.console.log("[refresh] Re-indexed stale JS files");
+    }
+  }
+
   connection.onCompletion((params) => {
-    if (!projectIndex) {
-      connection.console.log("[completion] No project index");
-      return [];
-    }
+    if (!projectIndex) return [];
+    ensureFreshIndex();
+
     const doc = documents.get(params.textDocument.uri);
-    if (!doc) {
-      connection.console.log("[completion] No document for " + params.textDocument.uri);
-      return [];
-    }
+    if (!doc) return [];
 
     const filePath = uriToPath(params.textDocument.uri);
     const source = doc.getText();
     const { line, character } = params.position;
 
-    connection.console.log(`[completion] Request at ${filePath}:${line}:${character}`);
-    const lineText = source.split("\n")[line] || "";
-    connection.console.log(`[completion] Line text: "${lineText}"`);
-    connection.console.log(`[completion] Text before cursor: "${lineText.slice(0, character)}"`);
-    connection.console.log(`[completion] Templates indexed: ${projectIndex.templateIndexer.size}, Components: ${projectIndex.componentIndexer.size}`);
-
-    const result = getCompletions(projectIndex, filePath, source, line, character);
-    connection.console.log(`[completion] Returning ${result.length} items`);
-    return result;
+    return getCompletions(projectIndex, filePath, source, line, character);
   });
 
   connection.onHover((params) => {
     if (!projectIndex) return null;
+    ensureFreshIndex();
+
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
 
@@ -138,6 +194,8 @@ function createServer(connection) {
 
   connection.onDefinition((params) => {
     if (!projectIndex) return null;
+    ensureFreshIndex();
+
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
 
@@ -150,6 +208,8 @@ function createServer(connection) {
 
   connection.onReferences((params) => {
     if (!projectIndex) return null;
+    ensureFreshIndex();
+
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
 
@@ -175,6 +235,29 @@ function createServer(connection) {
       const diagnostics = getDiagnostics(projectIndex, filePath, source);
       connection.sendDiagnostics({ uri: document.uri, diagnostics });
     }, 300);
+  }
+
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let htmlDiagnosticDebounce = null;
+
+  /**
+   * Re-run diagnostics on all open HTML documents (after a JS file changes).
+   */
+  function scheduleAllHtmlDiagnostics() {
+    if (htmlDiagnosticDebounce) {
+      clearTimeout(htmlDiagnosticDebounce);
+    }
+    htmlDiagnosticDebounce = setTimeout(() => {
+      if (!projectIndex) return;
+      for (const doc of documents.all()) {
+        if (doc.uri.endsWith(".html")) {
+          const filePath = uriToPath(doc.uri);
+          const source = doc.getText();
+          const diagnostics = getDiagnostics(projectIndex, filePath, source);
+          connection.sendDiagnostics({ uri: doc.uri, diagnostics });
+        }
+      }
+    }, 500);
   }
 
   documents.listen(connection);

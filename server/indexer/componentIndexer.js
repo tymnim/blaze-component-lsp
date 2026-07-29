@@ -13,6 +13,8 @@ class ComponentIndexer {
     this.components = new Map();
     /** @type {Map<string, ComponentInfo[]>} filePath → ComponentInfo[] */
     this.fileComponents = new Map();
+    /** @type {Map<string, number>} filePath → mtime (ms) when last indexed */
+    this._mtimes = new Map();
   }
 
   /**
@@ -29,6 +31,13 @@ class ComponentIndexer {
       }
     }
 
+    try {
+      const stat = fs.statSync(filePath);
+      this._mtimes.set(filePath, stat.mtimeMs);
+    } catch {
+      this._mtimes.set(filePath, Date.now());
+    }
+
     this.removeFile(filePath);
 
     const components = parseComponent(source, filePath);
@@ -36,6 +45,24 @@ class ComponentIndexer {
       this.components.set(comp.templateName, comp);
     }
     this.fileComponents.set(filePath, components);
+  }
+
+  /**
+   * Re-index any JS files whose mtime on disk is newer than when we last indexed them.
+   */
+  refreshStaleFiles() {
+    let changed = false;
+    for (const filePath of this._mtimes.keys()) {
+      try {
+        const stat = fs.statSync(filePath);
+        const lastIndexed = this._mtimes.get(filePath) || 0;
+        if (stat.mtimeMs > lastIndexed) {
+          this.indexFile(filePath);
+          changed = true;
+        }
+      } catch {}
+    }
+    return changed;
   }
 
   /**
