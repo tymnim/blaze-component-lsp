@@ -11,6 +11,16 @@ const { ComponentIndexer } = require("./componentIndexer");
  * @typedef {import("../parsers/componentParser").ContextField} ContextField
  */
 
+/** @param {string} p */
+function isDirectorySync(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
+/** @param {string} p */
+function isFileSync(p) {
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
 const IGNORE_DIRS = new Set([
   "node_modules", ".meteor", ".git", ".deploy",
   "cordova-build-override", "public", "resources"
@@ -189,10 +199,12 @@ class ProjectIndex {
       if (IGNORE_DIRS.has(entry.name)) continue;
 
       const fullPath = path.join(dirPath, entry.name);
+      const isDir = entry.isDirectory() || (entry.isSymbolicLink() && isDirectorySync(fullPath));
+      const isFile = entry.isFile() || (entry.isSymbolicLink() && isFileSync(fullPath));
 
-      if (entry.isDirectory()) {
+      if (isDir) {
         this._scanDirectory(fullPath);
-      } else if (entry.isFile()) {
+      } else if (isFile) {
         if (entry.name.endsWith(".html")) {
           this.templateIndexer.indexFile(fullPath);
           this._indexedFiles.add(fullPath);

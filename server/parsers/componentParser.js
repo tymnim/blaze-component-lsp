@@ -470,7 +470,7 @@ function matchBalancedExtends(text) {
   if (idx === -1) return null;
 
   const after = text.slice(idx);
-  const openMatch = after.match(/@extends\s+BlazeComponent</);
+  const openMatch = after.match(/@extends\s+\{?\s*BlazeComponent</);
   if (!openMatch) return null;
 
   const contentStart = idx + openMatch[0].length;

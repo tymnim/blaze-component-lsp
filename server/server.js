@@ -25,32 +25,52 @@ const { uriToPath, findMeteorRoot } = require("./utils/uri");
 function createServer(connection) {
   const documents = new TextDocuments(TextDocument);
 
-  /** @type {ProjectIndex|null} */
-  let projectIndex = null;
+  /** @type {Map<string, ProjectIndex>} meteorRoot → ProjectIndex */
+  const projectIndexes = new Map();
+
+  /** @type {Map<string, number>} meteorRoot → last refresh timestamp */
+  const lastRefreshTimes = new Map();
 
   /** @type {ReturnType<typeof setTimeout>|null} */
   let diagnosticDebounce = null;
 
-  connection.onInitialize((params) => {
-    const workspaceFolders = params.workspaceFolders;
-    let rootPath = null;
+  /**
+   * Get or create a ProjectIndex for the Meteor app containing the given file.
+   * @param {string} filePath
+   * @returns {ProjectIndex|null}
+   */
+  function getIndexForFile(filePath) {
+    const meteorRoot = findMeteorRoot(filePath);
+    if (!meteorRoot) return null;
 
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      rootPath = uriToPath(workspaceFolders[0].uri);
-    } else if (params.rootUri) {
-      rootPath = uriToPath(params.rootUri);
-    } else if (params.rootPath) {
-      rootPath = params.rootPath;
+    let index = projectIndexes.get(meteorRoot);
+    if (!index) {
+      index = new ProjectIndex(meteorRoot);
+      index.scan();
+      projectIndexes.set(meteorRoot, index);
+      connection.console.log(`[blaze-component-lsp] Indexed app at ${meteorRoot}: ${index.templateIndexer.size} templates, ${index.componentIndexer.size} components`);
     }
+    return index;
+  }
 
-    if (rootPath) {
-      const meteorRoot = findMeteorRoot(rootPath);
-      const scanRoot = meteorRoot || rootPath;
-      projectIndex = new ProjectIndex(scanRoot);
-      projectIndex.scan();
-      connection.console.log(`[blaze-component-lsp] Indexed project at ${scanRoot}: ${projectIndex.templateIndexer.size} templates, ${projectIndex.componentIndexer.size} components`);
+  /**
+   * Refresh stale JS files for a specific index.
+   * Debounced per meteor root: skips if checked within the last second.
+   * @param {string} filePath
+   * @param {ProjectIndex} index
+   */
+  function ensureFreshIndex(filePath, index) {
+    const meteorRoot = findMeteorRoot(filePath) || filePath;
+    const now = Date.now();
+    const lastRefresh = lastRefreshTimes.get(meteorRoot) || 0;
+    if (now - lastRefresh < 1000) return;
+    lastRefreshTimes.set(meteorRoot, now);
+    if (index.refreshStaleComponents()) {
+      connection.console.log(`[refresh] Re-indexed stale JS files for ${meteorRoot}`);
     }
+  }
 
+  connection.onInitialize(() => {
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Full,
@@ -66,7 +86,7 @@ function createServer(connection) {
   });
 
   connection.onInitialized(() => {
-    connection.console.log("[blaze-component-lsp] Server initialized");
+    connection.console.log("[blaze-component-lsp] Server initialized (lazy per-app indexing)");
 
     connection.client.register(
       require("vscode-languageserver").DidChangeWatchedFilesNotification.type,
@@ -88,23 +108,28 @@ function createServer(connection) {
     const filePath = uriToPath(uri);
     const source = change.document.getText();
 
-    if (!projectIndex) return;
+    if (!filePath.endsWith(".html") && !filePath.endsWith(".js")) return;
 
-    if (filePath.endsWith(".html") || filePath.endsWith(".js")) {
-      projectIndex.updateFile(filePath, source);
-      connection.console.log(`[sync] Re-indexed ${filePath}`);
-    }
+    const index = getIndexForFile(filePath);
+    if (!index) return;
+
+    index.updateFile(filePath, source);
+    connection.console.log(`[sync] Re-indexed ${filePath}`);
 
     if (filePath.endsWith(".html")) {
       scheduleDiagnostics(change.document);
     } else if (filePath.endsWith(".js")) {
-      scheduleAllHtmlDiagnostics();
+      scheduleHtmlDiagnosticsForIndex(index);
     }
   });
 
   documents.onDidOpen((event) => {
-    if (event.document.uri.endsWith(".html") && projectIndex) {
-      scheduleDiagnostics(event.document);
+    if (event.document.uri.endsWith(".html")) {
+      const filePath = uriToPath(event.document.uri);
+      const index = getIndexForFile(filePath);
+      if (index) {
+        scheduleDiagnostics(event.document);
+      }
     }
   });
 
@@ -113,79 +138,67 @@ function createServer(connection) {
   });
 
   connection.onDidChangeWatchedFiles((params) => {
-    if (!projectIndex) return;
+    /** @type {Set<ProjectIndex>} */
+    const jsChangedIndexes = new Set();
 
-    let jsChanged = false;
     for (const change of params.changes) {
       const filePath = uriToPath(change.uri);
       if (!filePath.endsWith(".html") && !filePath.endsWith(".js")) continue;
 
+      const index = getIndexForFile(filePath);
+      if (!index) continue;
+
       if (change.type === 3 /* Deleted */) {
-        projectIndex.removeFile(filePath);
+        index.removeFile(filePath);
         connection.console.log(`[watch] Removed ${filePath}`);
       } else {
         try {
           const source = fs.readFileSync(filePath, "utf-8");
-          projectIndex.updateFile(filePath, source);
+          index.updateFile(filePath, source);
           connection.console.log(`[watch] Re-indexed ${filePath}`);
         } catch (err) {
           connection.console.log(`[watch] Failed to read ${filePath}: ${err}`);
         }
       }
 
-      if (filePath.endsWith(".js")) jsChanged = true;
+      if (filePath.endsWith(".js")) jsChangedIndexes.add(index);
     }
 
-    if (jsChanged) {
-      scheduleAllHtmlDiagnostics();
+    for (const index of jsChangedIndexes) {
+      scheduleHtmlDiagnosticsForIndex(index);
     }
   });
 
-  /**
-   * Refresh stale JS files before serving a request.
-   * Debounced: skips if checked within the last second.
-   */
-  let lastRefresh = 0;
-  function ensureFreshIndex() {
-    const now = Date.now();
-    if (now - lastRefresh < 1000) return;
-    lastRefresh = now;
-    if (projectIndex && projectIndex.refreshStaleComponents()) {
-      connection.console.log("[refresh] Re-indexed stale JS files");
-    }
-  }
-
   connection.onCompletion((params) => {
-    if (!projectIndex) return [];
-    ensureFreshIndex();
+    const filePath = uriToPath(params.textDocument.uri);
+    const index = getIndexForFile(filePath);
+    if (!index) return [];
+    ensureFreshIndex(filePath, index);
 
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return [];
 
-    const filePath = uriToPath(params.textDocument.uri);
     const source = doc.getText();
     const { line, character } = params.position;
 
-    const result = getCompletions(projectIndex, filePath, source, line, character);
+    const result = getCompletions(index, filePath, source, line, character);
     connection.console.log(`[completion] ${filePath}:${line}:${character} → ${result.length} items`);
-    for (const item of result.slice(0, 5)) {
-      connection.console.log(`[completion]   ${item.label}: detail="${item.detail}"`);
-    }
     return result;
   });
 
   connection.onHover((params) => {
-    if (!projectIndex) return null;
-    ensureFreshIndex();
+    const filePath = uriToPath(params.textDocument.uri);
+    const index = getIndexForFile(filePath);
+    if (!index) return null;
+    ensureFreshIndex(filePath, index);
 
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
 
-    const filePath = uriToPath(params.textDocument.uri);
     const source = doc.getText();
     const { line, character } = params.position;
 
-    const result = getHover(projectIndex, filePath, source, line, character);
+    const result = getHover(index, filePath, source, line, character);
     if (!result) return null;
 
     return {
@@ -198,35 +211,37 @@ function createServer(connection) {
   });
 
   connection.onDefinition((params) => {
-    if (!projectIndex) return null;
-    ensureFreshIndex();
+    const filePath = uriToPath(params.textDocument.uri);
+    const index = getIndexForFile(filePath);
+    if (!index) return null;
+    ensureFreshIndex(filePath, index);
 
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
 
-    const filePath = uriToPath(params.textDocument.uri);
     const source = doc.getText();
     const { line, character } = params.position;
 
-    return getDefinition(projectIndex, filePath, source, line, character);
+    return getDefinition(index, filePath, source, line, character);
   });
 
   connection.onReferences((params) => {
-    if (!projectIndex) return null;
-    ensureFreshIndex();
+    const filePath = uriToPath(params.textDocument.uri);
+    const index = getIndexForFile(filePath);
+    if (!index) return null;
+    ensureFreshIndex(filePath, index);
 
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
 
-    const filePath = uriToPath(params.textDocument.uri);
     const source = doc.getText();
     const { line, character } = params.position;
 
-    return getReferences(projectIndex, filePath, source, line, character);
+    return getReferences(index, filePath, source, line, character);
   });
 
   /**
-   * Schedule diagnostics with debounce.
+   * Schedule diagnostics with debounce for a single document.
    * @param {TextDocument} document
    */
   function scheduleDiagnostics(document) {
@@ -234,10 +249,11 @@ function createServer(connection) {
       clearTimeout(diagnosticDebounce);
     }
     diagnosticDebounce = setTimeout(() => {
-      if (!projectIndex) return;
       const filePath = uriToPath(document.uri);
+      const index = getIndexForFile(filePath);
+      if (!index) return;
       const source = document.getText();
-      const diagnostics = getDiagnostics(projectIndex, filePath, source);
+      const diagnostics = getDiagnostics(index, filePath, source);
       connection.sendDiagnostics({ uri: document.uri, diagnostics });
     }, 300);
   }
@@ -246,28 +262,29 @@ function createServer(connection) {
   let htmlDiagnosticDebounce = null;
 
   /**
-   * Re-run diagnostics on all open HTML documents (after a JS file changes).
+   * Re-run diagnostics on all open HTML documents belonging to a specific index.
+   * @param {ProjectIndex} targetIndex
    */
-  function scheduleAllHtmlDiagnostics() {
+  function scheduleHtmlDiagnosticsForIndex(targetIndex) {
     if (htmlDiagnosticDebounce) {
       clearTimeout(htmlDiagnosticDebounce);
     }
     htmlDiagnosticDebounce = setTimeout(() => {
-      if (!projectIndex) return;
       for (const doc of documents.all()) {
-        if (doc.uri.endsWith(".html")) {
-          const filePath = uriToPath(doc.uri);
-          const source = doc.getText();
-          const diagnostics = getDiagnostics(projectIndex, filePath, source);
-          connection.sendDiagnostics({ uri: doc.uri, diagnostics });
-        }
+        if (!doc.uri.endsWith(".html")) continue;
+        const filePath = uriToPath(doc.uri);
+        const index = getIndexForFile(filePath);
+        if (index !== targetIndex) continue;
+        const source = doc.getText();
+        const diagnostics = getDiagnostics(index, filePath, source);
+        connection.sendDiagnostics({ uri: doc.uri, diagnostics });
       }
     }, 500);
   }
 
   documents.listen(connection);
 
-  return { connection, documents, getProjectIndex: () => projectIndex };
+  return { connection, documents, getIndexForFile };
 }
 
 module.exports = { createServer };
