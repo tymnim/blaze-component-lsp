@@ -31,12 +31,16 @@
     },
     "block-close": {
       "name": "meta.block.close.spacebars",
-      "match": "(\\{\\{)(/)(\\w+)(\\}\\})",
+      "match": "(\\{\\{)(/)(if|unless|each|with|let|else)(\\}\\})|(\\{\\{)(/)(\\w+)(\\}\\})",
       "captures": {
         "1": { "name": "punctuation.definition.expression.begin.spacebars" },
         "2": { "name": "keyword.operator.close.spacebars" },
         "3": { "name": "keyword.control.spacebars" },
-        "4": { "name": "punctuation.definition.expression.end.spacebars" }
+        "4": { "name": "punctuation.definition.expression.end.spacebars" },
+        "5": { "name": "punctuation.definition.expression.begin.spacebars" },
+        "6": { "name": "keyword.operator.close.spacebars" },
+        "7": { "name": "variable.other.spacebars" },
+        "8": { "name": "punctuation.definition.expression.end.spacebars" }
       }
     },
     "block-open": {

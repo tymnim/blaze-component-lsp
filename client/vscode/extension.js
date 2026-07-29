@@ -1,7 +1,8 @@
 // @ts-check
 const path = require("node:path");
 const fs = require("node:fs");
-const { workspace, window } = require("vscode");
+const vscode = require("vscode");
+const { workspace, window } = vscode;
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 
 /** @type {LanguageClient|undefined} */
@@ -106,6 +107,30 @@ function activate(context) {
   );
 
   client.start();
+
+  const onType = vscode.workspace.onDidChangeTextDocument((e) => {
+    if (e.document.languageId !== "html") return;
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document !== e.document) return;
+
+    for (const change of e.contentChanges) {
+      const ch = change.text;
+      if (ch === "#" || ch === ">" || ch === "{") {
+        setTimeout(() => {
+          const pos = editor.selection.active;
+          const lineText = e.document.lineAt(pos.line).text;
+          const before = lineText.slice(0, pos.character);
+          outputChannel.appendLine(`[trigger] typed="${ch}" before="${before.slice(-10)}"`);
+          if (before.endsWith("{{#") || before.endsWith("{{>")) {
+            outputChannel.appendLine("[trigger] firing editor.action.triggerSuggest");
+            vscode.commands.executeCommand("editor.action.triggerSuggest");
+          }
+        }, 50);
+        return;
+      }
+    }
+  });
+  context.subscriptions.push(onType);
 }
 
 function deactivate() {

@@ -36,7 +36,13 @@ function getCompletions(index, filePath, source, line, column) {
   }
 
   if (isInsideBlockOpen(textBeforeCursor)) {
-    return getBlockCompletions(index, template.name);
+    const blockStart = textBeforeCursor.lastIndexOf("{{#");
+    const nameStart = blockStart + 3;
+    const editRange = {
+      start: { line, character: nameStart },
+      end: { line, character: column }
+    };
+    return getBlockCompletions(index, template.name, editRange);
   }
 
   if (isInsideMustache(textBeforeCursor)) {
@@ -299,19 +305,23 @@ function getHelperAndDataCompletions(index, templateName) {
  * Get completions for `{{#...}}` — built-in block helpers + block templates.
  * @param {ProjectIndex} index
  * @param {string} currentTemplateName
+ * @param {{ start: { line: number, character: number }, end: { line: number, character: number } }} [editRange]
  * @returns {import("vscode-languageserver").CompletionItem[]}
  */
-function getBlockCompletions(index, currentTemplateName) {
+function getBlockCompletions(index, currentTemplateName, editRange) {
   /** @type {import("vscode-languageserver").CompletionItem[]} */
   const items = [];
 
   for (const builtin of ["if", "unless", "each", "with", "let"]) {
-    items.push({
+    /** @type {import("vscode-languageserver").CompletionItem} */
+    const item = {
       label: builtin,
       kind: CompletionItemKind.Keyword,
       detail: "Block helper",
       data: { type: "builtin", name: builtin }
-    });
+    };
+    if (editRange) item.textEdit = { range: editRange, newText: builtin };
+    items.push(item);
   }
 
   for (const name of index.getBlockTemplateNames()) {
@@ -351,26 +361,16 @@ function getBlockCompletions(index, currentTemplateName) {
       documentation = { kind: "markdown", value: docParts.join("\n\n") };
     }
 
-    items.push({
+    /** @type {import("vscode-languageserver").CompletionItem} */
+    const item = {
       label: name,
       kind: CompletionItemKind.Snippet,
       detail,
       documentation,
       data: { type: "blockTemplate", name }
-    });
-  }
-
-  // Also suggest helpers from the current template that could be used as block helpers
-  const { helpers } = index.getAvailableIdentifiers(currentTemplateName);
-  for (const helper of helpers) {
-    const paramSig = formatHelperParams(helper.params);
-    const returnSig = helper.returnType ? ` → ${helper.returnType}` : "";
-    items.push({
-      label: helper.name,
-      kind: CompletionItemKind.Function,
-      detail: `(${paramSig})${returnSig}`,
-      data: { type: "helper", name: helper.name, templateName: currentTemplateName }
-    });
+    };
+    if (editRange) item.textEdit = { range: editRange, newText: name };
+    items.push(item);
   }
 
   return items;
