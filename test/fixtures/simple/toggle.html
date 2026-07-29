@@ -1,0 +1,13 @@
+<template name="toggleButton">
+  <div id="{{target}}-toggle-button" class="toggle-button {{isChecked}} {{#if isDisabled}}disabled{{/if}}">
+    <span class="text">
+      {{#if html}}
+        {{{html}}}
+      {{/if}}
+      {{#if text}}
+        {{text}}{{{icon}}}
+      {{/if}}
+    </span>
+    <div class="slide"></div>
+  </div>
+</template>

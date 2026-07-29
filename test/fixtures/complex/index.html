@@ -1,0 +1,24 @@
+<template name="index">
+  <div id="indexPage">
+    <h2>
+      <span class="dashboard">Dashboard</span>
+      <span class="travel-toggle">
+        {{#if offlineSupport}}
+          {{#if user.can "offline-app" user.teamId}}
+            {{> toggleButton
+              id="plane-mode"
+              checked=notConnected
+              text=text
+              isDisabled=performingOfflineDownload
+              icon="<i class='fas fa-plane'></i>"
+              onchange=planeModeToggle
+            }}
+          {{/if}}
+        {{/if}}
+      </span>
+    </h2>
+    <div id="inner">
+      {{> cardsContainer assignments}}
+    </div>
+  </div>
+</template>

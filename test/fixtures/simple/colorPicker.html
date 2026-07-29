@@ -1,0 +1,16 @@
+<template name="noteColorPicker">
+  <div class="dropdown tool dropup-menu colorPicker">
+    <span class="dropdown-toggle" type="button">
+      <i class="fas fa-circle tool-icon color-picker-icon"></i>
+    </span>
+    <div class="dropdown-menu">
+      <div class="color-picker-menu-col">
+        <div class="color-picker-menu-row">
+          {{#each color in colors}}
+            <span><i class="{{color.cssClass}} color" data-color="{{color.hex}}"></i></span>
+          {{/each}}
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

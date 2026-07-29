@@ -1,0 +1,26 @@
+{
+  "name": "blaze-component-lsp",
+  "version": "0.1.0",
+  "description": "LSP server for Meteor Blaze templates with BlazeComponent",
+  "main": "server/index.js",
+  "bin": {
+    "blaze-component-lsp": "server/index.js"
+  },
+  "scripts": {
+    "start": "node server/index.js --stdio",
+    "test": "node --test test/**/*.test.js",
+    "test:parsers": "node --test test/parsers/*.test.js",
+    "test:indexer": "node --test test/indexer/*.test.js",
+    "test:providers": "node --test test/providers/*.test.js"
+  },
+  "dependencies": {
+    "typescript": "^5.8.3",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

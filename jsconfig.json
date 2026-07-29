@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "module": "commonjs",
+    "target": "es2022",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "strict": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {}
+  },
+  "include": ["server/**/*.js", "test/**/*.js"],
+  "exclude": ["node_modules", "project-example", "client"]
+}
