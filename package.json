@@ -4,10 +4,12 @@
   "description": "LSP server for Meteor Blaze templates with BlazeComponent",
   "main": "server/index.js",
   "bin": {
-    "blaze-component-lsp": "server/index.js"
+    "blaze-component-lsp": "server/index.js",
+    "blaze-check": "cli/index.js"
   },
   "scripts": {
     "start": "node server/index.js --stdio",
+    "check": "node cli/index.js",
     "test": "node --test test/**/*.test.js",
     "test:parsers": "node --test test/parsers/*.test.js",
     "test:indexer": "node --test test/indexer/*.test.js",
