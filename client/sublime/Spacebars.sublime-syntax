@@ -1,0 +1,187 @@
+%YAML 1.2
+---
+# Spacebars / Blaze template syntax highlighting for Sublime Text
+#
+# Install: symlink into Packages/User/
+#   ln -s ~/Projects/blaze-component-lsp/client/sublime/Spacebars.sublime-syntax \
+#         ~/Library/Application\ Support/Sublime\ Text/Packages/User/Spacebars.sublime-syntax
+#
+# Then set as default for .html: View > Syntax > Open all with current extension as > Spacebars HTML
+
+name: Spacebars HTML
+scope: text.html.spacebars
+version: 2
+file_extensions:
+  - html
+
+extends: Packages/HTML/HTML.sublime-syntax
+
+contexts:
+  prototype:
+    - include: spacebars-comment-long
+    - include: spacebars-comment-short
+    - include: spacebars-raw
+    - include: spacebars-block-close
+    - include: spacebars-block-open
+    - include: spacebars-else
+    - include: spacebars-partial
+    - include: spacebars-mustache
+
+  spacebars-comment-long:
+    - match: '\{\{!--'
+      scope: punctuation.definition.comment.begin.spacebars
+      push: spacebars-comment-long-body
+
+  spacebars-comment-long-body:
+    - meta_include_prototype: false
+    - meta_scope: comment.block.spacebars
+    - match: '--\}\}'
+      scope: punctuation.definition.comment.end.spacebars
+      pop: true
+
+  spacebars-comment-short:
+    - match: '\{\{!'
+      scope: punctuation.definition.comment.begin.spacebars
+      push: spacebars-comment-short-body
+
+  spacebars-comment-short-body:
+    - meta_include_prototype: false
+    - meta_scope: comment.block.spacebars
+    - match: '\}\}'
+      scope: punctuation.definition.comment.end.spacebars
+      pop: true
+
+  spacebars-raw:
+    - match: '\{\{\{'
+      scope: punctuation.definition.expression.begin.spacebars
+      push: spacebars-raw-body
+
+  spacebars-raw-body:
+    - meta_include_prototype: false
+    - meta_scope: meta.expression.raw.spacebars
+    - match: '\}\}\}'
+      scope: punctuation.definition.expression.end.spacebars
+      pop: true
+    - include: spacebars-expression-contents
+
+  spacebars-block-close:
+    - match: '(\{\{)(/)(if|unless|each|with|let|else)(\}\})'
+      captures:
+        1: punctuation.definition.expression.begin.spacebars
+        2: keyword.operator.close.spacebars
+        3: keyword.control.spacebars
+        4: punctuation.definition.expression.end.spacebars
+    - match: '(\{\{)(/)(\w+)(\}\})'
+      captures:
+        1: punctuation.definition.expression.begin.spacebars
+        2: keyword.operator.close.spacebars
+        3: variable.other.spacebars
+        4: punctuation.definition.expression.end.spacebars
+
+  spacebars-block-open:
+    - match: '(\{\{)(#|else\s+if\b)'
+      captures:
+        1: punctuation.definition.expression.begin.spacebars
+        2: keyword.operator.block.spacebars
+      push: spacebars-block-open-body
+
+  spacebars-block-open-body:
+    - meta_include_prototype: false
+    - meta_scope: meta.block.open.spacebars
+    - match: '\}\}'
+      scope: punctuation.definition.expression.end.spacebars
+      pop: true
+    - include: spacebars-block-keyword
+    - include: spacebars-expression-contents
+
+  spacebars-block-keyword:
+    - match: '\b(if|unless|each|with|let|else)\b'
+      scope: keyword.control.spacebars
+
+  spacebars-else:
+    - match: '(\{\{)(else)(\}\})'
+      captures:
+        1: punctuation.definition.expression.begin.spacebars
+        2: keyword.control.spacebars
+        3: punctuation.definition.expression.end.spacebars
+
+  spacebars-partial:
+    - match: '(\{\{)(>)\s*'
+      captures:
+        1: punctuation.definition.expression.begin.spacebars
+        2: keyword.operator.partial.spacebars
+      push: spacebars-partial-body
+
+  spacebars-partial-body:
+    - meta_include_prototype: false
+    - meta_scope: meta.expression.partial.spacebars
+    - match: '\}\}'
+      scope: punctuation.definition.expression.end.spacebars
+      pop: true
+    - match: '\bTemplate\.\w+\b'
+      scope: support.class.template.spacebars
+    - match: '([A-Za-z_][A-Za-z0-9_.]*)\b'
+      scope: entity.name.tag.partial.spacebars
+    - include: spacebars-expression-contents
+
+  spacebars-mustache:
+    - match: '\{\{(?![!>/#])'
+      scope: punctuation.definition.expression.begin.spacebars
+      push: spacebars-mustache-body
+
+  spacebars-mustache-body:
+    - meta_include_prototype: false
+    - meta_scope: meta.expression.mustache.spacebars
+    - match: '\}\}'
+      scope: punctuation.definition.expression.end.spacebars
+      pop: true
+    - include: spacebars-expression-contents
+
+  spacebars-expression-contents:
+    - match: '"'
+      scope: punctuation.definition.string.begin.spacebars
+      push: spacebars-string-double-body
+    - match: "'"
+      scope: punctuation.definition.string.begin.spacebars
+      push: spacebars-string-single-body
+    - match: '\b\d+(?:\.\d+)?\b'
+      scope: constant.numeric.spacebars
+    - match: '\b(true|false|null|undefined)\b'
+      scope: constant.language.spacebars
+    - match: '\b(in)\b'
+      scope: keyword.operator.in.spacebars
+    - match: '([A-Za-z_][A-Za-z0-9_]*)\s*(=)'
+      captures:
+        1: variable.parameter.spacebars
+        2: keyword.operator.assignment.spacebars
+    - match: '\('
+      scope: punctuation.section.parens.begin.spacebars
+      push: spacebars-sub-expression-body
+    - match: '([A-Za-z_][A-Za-z0-9_]*)((?:\.[A-Za-z_][A-Za-z0-9_]*)+)'
+      captures:
+        1: variable.other.object.spacebars
+        2: variable.other.property.spacebars
+    - match: '[A-Za-z_@][A-Za-z0-9_]*'
+      scope: variable.other.spacebars
+
+  spacebars-string-double-body:
+    - meta_include_prototype: false
+    - meta_scope: string.quoted.double.spacebars
+    - match: '"'
+      scope: punctuation.definition.string.end.spacebars
+      pop: true
+
+  spacebars-string-single-body:
+    - meta_include_prototype: false
+    - meta_scope: string.quoted.single.spacebars
+    - match: "'"
+      scope: punctuation.definition.string.end.spacebars
+      pop: true
+
+  spacebars-sub-expression-body:
+    - meta_include_prototype: false
+    - meta_scope: meta.sub-expression.spacebars
+    - match: '\)'
+      scope: punctuation.section.parens.end.spacebars
+      pop: true
+    - include: spacebars-expression-contents

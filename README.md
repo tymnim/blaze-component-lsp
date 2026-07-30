@@ -1,6 +1,6 @@
 # Blaze Component LSP
 
-Language server and CLI type-checker for [Meteor](https://www.meteor.com/) projects using [Blaze](https://www.blazejs.org/), [Spacebars](https://www.blazejs.org/api/spacebars), and [BlazeComponent](https://github.com/peerlibrary/meteor-blaze-components).
+Language server and CLI type-checker for [Meteor](https://www.meteor.com/) projects using [Blaze](https://www.blazejs.org/), [Spacebars](https://www.blazejs.org/api/spacebars), and Blaze Component.
 
 Provides editor intelligence for HTML template files — aware of your templates, helpers, context data types, and global helpers.
 
@@ -12,7 +12,7 @@ Provides editor intelligence for HTML template files — aware of your templates
 - **Find References** — find all usages of a helper or template across HTML files
 - **Diagnostics** — unknown helpers, missing templates, type mismatches, unknown context data fields
 - **CLI type-checker** — run `blaze-check` in CI or npm scripts like ESLint
-- **Syntax highlighting** — Spacebars syntax highlighting for VS Code and Neovim
+- **Syntax highlighting** — Spacebars syntax highlighting for VS Code, Neovim, and Sublime Text
 
 ## What it understands
 
@@ -46,13 +46,22 @@ cd ~/Projects/blaze-component-lsp/client/vscode
 npm install
 ```
 
-2. Symlink the extension into your VS Code extensions directory:
+2. Install the server dependencies:
 
 ```bash
-ln -s ~/Projects/blaze-component-lsp/client/vscode ~/.vscode/extensions/blaze-component-lsp
+cd ~/Projects/blaze-component-lsp
+npm install
 ```
 
-3. Reload VS Code. The extension activates automatically when it detects a `.meteor` directory in your workspace.
+3. Symlink the extension into your VS Code extensions directory. The directory name **must** follow the `publisher.name-version` format:
+
+```bash
+ln -s ~/Projects/blaze-component-lsp/client/vscode ~/.vscode/extensions/blaze-component-lsp.blaze-component-lsp-0.1.0
+```
+
+4. Reload VS Code (`Developer: Reload Window`). The extension activates automatically when it detects a `.meteor` directory in your workspace.
+
+To verify it's loaded, check the Output panel — select "Blaze Component LSP" from the dropdown. You should see startup logs.
 
 **Settings** (optional, in VS Code `settings.json`):
 
@@ -118,7 +127,7 @@ Add to `:CocConfig`:
       "args": ["~/Projects/blaze-component-lsp/server/index.js", "--stdio"],
       "filetypes": ["html"],
       "rootPatterns": [".meteor"]
-    }
+    Blaze Component}
   }
 }
 ```
@@ -132,6 +141,47 @@ vim.opt.runtimepath:prepend(vim.fn.expand("~/Projects/blaze-component-lsp/client
 ```
 
 This loads Spacebars syntax highlighting for HTML files, working alongside Tree-sitter.
+
+### Sublime Text
+
+Requires the [LSP](https://packagecontrol.io/packages/LSP) package.
+
+#### LSP Server
+
+Add to your LSP settings (`Preferences > Package Settings > LSP > Settings`):
+
+```json
+{
+  "clients": {
+    "blaze-component-lsp": {
+      "enabled": true,
+      "command": ["node", "/path/to/blaze-component-lsp/server/index.js", "--stdio"],
+      "selector": "text.html.basic | text.html.spacebars"
+    }
+  }
+}
+```
+
+To enable auto-triggered completions for Spacebars expressions, add to your Sublime user settings (`Preferences > Settings`):
+
+```json
+"auto_complete_triggers": [
+  {"selector": "text.html", "characters": ">{#=."}
+]
+```
+
+#### Syntax Highlighting
+
+Copy the syntax file into your Sublime `Packages/User/` directory:
+
+```bash
+cp /path/to/blaze-component-lsp/client/sublime/Spacebars.sublime-syntax \
+   "$(sublime --command 'echo $SUBLIME_PACKAGES' 2>/dev/null || echo ~/.config/sublime-text/Packages)/User/Spacebars.sublime-syntax"
+```
+
+Or manually: open `Preferences > Browse Packages`, navigate into `User/`, and copy `client/sublime/Spacebars.sublime-syntax` there.
+
+Then set HTML files to use the Spacebars syntax: `View > Syntax > User > Spacebars HTML`, or to make it the default for all `.html` files: `View > Syntax > Open all with current extension as... > Spacebars HTML`.
 
 ## CLI — `blaze-check`
 
@@ -261,10 +311,12 @@ blaze-component-lsp/
 │   │   ├── extension.js
 │   │   ├── package.json
 │   │   └── syntaxes/
-│   └── neovim/              # Neovim plugin
-│       ├── plugin/
-│       ├── after/
-│       └── lspconfig.lua
+│   ├── neovim/              # Neovim plugin
+│   │   ├── plugin/
+│   │   ├── after/
+│   │   └── lspconfig.lua
+│   └── sublime/             # Sublime Text syntax
+│       └── Spacebars.sublime-syntax
 └── test/                    # Unit tests
     ├── parsers/
     ├── indexer/
