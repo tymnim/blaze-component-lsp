@@ -99,6 +99,23 @@ describe("TypeService — helper signatures", () => {
     assert.ok(upper.params && upper.params.length >= 1);
     assert.equal(upper.params[0].name, "value");
   });
+
+  it("should capture JSDoc description on global helpers", () => {
+    const index = new ProjectIndex(typedRoot);
+    index.scan();
+    const upper = index.getGlobalHelper("upper");
+    assert.ok(upper && upper.documentation, "upper should have documentation");
+    assert.ok(
+      upper.documentation.toLowerCase().includes("uppercase"),
+      `docs=${upper.documentation}`
+    );
+
+    const q = index.getGlobalHelper("queryParamsWith");
+    assert.ok(q, "queryParamsWith");
+    assert.ok(q.documentation && q.documentation.includes("Reactively makes query params"), `docs=${q.documentation}`);
+    assert.ok(q.returnType && q.returnType.includes("string"));
+    assert.ok(q.params && q.params.length === 2);
+  });
 });
 
 describe("TypeService — diagnostics assignability", () => {

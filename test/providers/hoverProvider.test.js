@@ -89,4 +89,31 @@ describe("getHover", () => {
     assert.ok(result.contents.includes("Context Data"));
     assert.ok(result.contents.includes("checked"));
   });
+
+  it("should show global helper description on hover", () => {
+    index.updateFile(
+      "/test/globals.js",
+      `Blaze.registerHelper(
+  "queryParamsWith",
+  /**
+   * Reactively makes query params with {key}={value}
+   * @param {string} key
+   * @param {string} value
+   * @returns {string}
+   */
+  function makeQueryParams(key, value) {
+    return "?";
+  }
+);
+`
+    );
+    const source = '<template name="toggleButton">\n  {{queryParamsWith}}\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    const result = getHover(index, "/test/toggle.html", source, 1, 6);
+    assert.ok(result, "expected hover");
+    assert.ok(result.contents.includes("Global helper"), result.contents);
+    assert.ok(result.contents.includes("queryParamsWith"), result.contents);
+    assert.ok(result.contents.includes("Reactively makes query params"), result.contents);
+  });
 });

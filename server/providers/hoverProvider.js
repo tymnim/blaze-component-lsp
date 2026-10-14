@@ -130,25 +130,51 @@ function getIdentifierHover(index, templateName, expression, eachScopes = []) {
 
   const component = index.getComponentForTemplate(templateName);
 
-  if (!component) return null;
+  if (component) {
+    const helper = component.helpers.find(h => h.name === identifierName);
+    if (helper) {
+      /** @type {string[]} */
+      const parts = [`**Helper: \`${helper.name}\`**`];
+      if (helper.returnType) parts.push(`\nReturns: \`${helper.returnType}\``);
+      if (helper.documentation) parts.push(`\n${helper.documentation}`);
+      if (helper.params && helper.params.length > 0) {
+        const paramLines = helper.params.map(p => {
+          const type = p.type ? `: \`${p.type}\`` : "";
+          const desc = p.description ? ` — ${p.description}` : "";
+          return `- \`${p.name}\`${type}${desc}`;
+        });
+        parts.push("\n**Params**\n\n" + paramLines.join("\n"));
+      }
+      parts.push(`\nMethod: \`${helper.methodName}\` in \`${component.className}\``);
+      parts.push(`\nFile: \`${component.filePath}\``);
+      return { contents: parts.join("\n"), range: expression.loc };
+    }
 
-  const helper = component.helpers.find(h => h.name === identifierName);
-  if (helper) {
-    /** @type {string[]} */
-    const parts = [`**Helper: \`${helper.name}\`**`];
-    if (helper.returnType) parts.push(`\nReturns: \`${helper.returnType}\``);
-    if (helper.documentation) parts.push(`\n${helper.documentation}`);
-    parts.push(`\nMethod: \`${helper.methodName}\` in \`${component.className}\``);
-    parts.push(`\nFile: \`${component.filePath}\``);
-    return { contents: parts.join("\n"), range: expression.loc };
+    const field = component.contextDataFields.find(f => f.name === identifierName);
+    if (field) {
+      /** @type {string[]} */
+      const parts = [`**Context Data: \`${field.name}\`**`];
+      parts.push(`\nType: \`${field.type}\``);
+      if (field.description) parts.push(`\n${field.description}`);
+      return { contents: parts.join("\n"), range: expression.loc };
+    }
   }
 
-  const field = component.contextDataFields.find(f => f.name === identifierName);
-  if (field) {
+  const globalHelper = index.getGlobalHelper(identifierName);
+  if (globalHelper) {
     /** @type {string[]} */
-    const parts = [`**Context Data: \`${field.name}\`**`];
-    parts.push(`\nType: \`${field.type}\``);
-    if (field.description) parts.push(`\n${field.description}`);
+    const parts = [`**Global helper: \`${globalHelper.name}\`**`];
+    if (globalHelper.returnType) parts.push(`\nReturns: \`${globalHelper.returnType}\``);
+    if (globalHelper.documentation) parts.push(`\n${globalHelper.documentation}`);
+    if (globalHelper.params && globalHelper.params.length > 0) {
+      const paramLines = globalHelper.params.map(p => {
+        const type = p.type ? `: \`${p.type}\`` : "";
+        const desc = p.description ? ` — ${p.description}` : "";
+        return `- \`${p.name}\`${type}${desc}`;
+      });
+      parts.push("\n**Params**\n\n" + paramLines.join("\n"));
+    }
+    parts.push(`\nFile: \`${globalHelper.filePath}\``);
     return { contents: parts.join("\n"), range: expression.loc };
   }
 

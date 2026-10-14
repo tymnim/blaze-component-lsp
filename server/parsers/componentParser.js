@@ -1062,13 +1062,13 @@ function findGlobalHelpers(source, filePath) {
           }
         }
 
-        let documentation;
-        const jsDocComments = ts.getJSDocCommentsAndTags(node);
-        for (const jd of jsDocComments) {
-          if (ts.isJSDoc(jd) && jd.comment) {
-            documentation = typeof jd.comment === "string" ? jd.comment : jd.comment.map(c => c.text || "").join("");
-            break;
-          }
+        // JSDoc usually sits on the function argument, not the registerHelper() call
+        let documentation = extractJsDocDescription(fn);
+        if (!documentation) documentation = extractJsDocDescription(node);
+
+        // Merge @param descriptions onto params when present on the function
+        if (params.length > 0 && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) {
+          mergeJsDocParamDescriptions(fn, params);
         }
 
         helpers.push({ name, filePath, range, returnType, documentation, params: params.length > 0 ? params : undefined });
@@ -1080,6 +1080,53 @@ function findGlobalHelpers(source, filePath) {
 
   visit(sourceFile);
   return helpers;
+}
+
+/**
+ * Pull the free-text description from a node's leading JSDoc (excluding @tags).
+ * @param {import("typescript").Node|undefined} node
+ * @returns {string|undefined}
+ */
+function extractJsDocDescription(node) {
+  if (!node) return undefined;
+  const jsDocComments = ts.getJSDocCommentsAndTags(node);
+  for (const jd of jsDocComments) {
+    if (ts.isJSDoc(jd) && jd.comment) {
+      const text = typeof jd.comment === "string"
+        ? jd.comment
+        : jd.comment.map(c => ("text" in c ? c.text : "") || "").join("");
+      const cleaned = text.replace(/\s+/g, " ").trim();
+      if (cleaned) return cleaned;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Fill in HelperParam.description from @param JSDoc tags when missing.
+ * @param {import("typescript").Node} node
+ * @param {HelperParam[]} params
+ */
+function mergeJsDocParamDescriptions(node, params) {
+  const tags = ts.getJSDocTags(node);
+  /** @type {Map<string, string>} */
+  const descs = new Map();
+  for (const tag of tags) {
+    if (tag.tagName.text !== "param" || !tag.comment) continue;
+    const paramTag = /** @type {import("typescript").JSDocParameterTag} */ (tag);
+    const pName = paramTag.name ? paramTag.name.getText() : undefined;
+    if (!pName) continue;
+    const text = typeof tag.comment === "string"
+      ? tag.comment
+      : tag.comment.map(c => ("text" in c ? c.text : "") || "").join("");
+    const cleaned = text.replace(/\s+/g, " ").trim();
+    if (cleaned) descs.set(pName, cleaned);
+  }
+  for (const p of params) {
+    if (!p.description && descs.has(p.name)) {
+      p.description = descs.get(p.name);
+    }
+  }
 }
 
 /**

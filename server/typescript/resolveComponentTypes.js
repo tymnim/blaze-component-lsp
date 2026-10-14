@@ -74,6 +74,15 @@ function resolveGlobalHelperTypes(helpers, typeService, filePath) {
     const fnType = checker.getTypeAtLocation(call.fnNode);
     applySignatureToHelper(checker, typeService, fnType, call.fnNode, helper);
 
+    // Documentation from the callback's JSDoc (often on the fn arg, not the call)
+    if (!helper.documentation) {
+      const sig = fnType.getCallSignatures()[0];
+      if (sig) {
+        const docs = ts.displayPartsToString(sig.getDocumentationComment(checker));
+        if (docs) helper.documentation = docs;
+      }
+    }
+
     // If contextual typing left us with any, fall back to JSDoc on the function node
     if (!helper.returnType || helper.returnType === "any") {
       const jsDocReturn = getJsDocReturnTypeString(call.fnNode, checker, typeService);
