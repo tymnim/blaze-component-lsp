@@ -232,3 +232,29 @@ describe("parseComponent — no registration", () => {
     assert.equal(components.length, 0);
   });
 });
+
+describe("parseComponent — large inline @extends ContextData", () => {
+  it("should parse all fields including nested objects and => function types", () => {
+    const source = `
+import { BlazeComponent, Component } from "meteor/znewsham:blaze-component";
+/**
+ * @extends BlazeComponent<{
+ *  docs?: Doc[] - the cards to render, with commas in the prose.
+ *  transformDocs?: (docs: Doc[]) => Doc[] - post processes the list, for grouping.
+ *  renderNoItems?: { visual: string, message: string, wording: string }
+ *  ready: boolean
+ * }, { pageLoads: number }>
+ */
+@Component(Template.cardsContainer)
+export class CardsContainer extends BlazeComponent {}
+BlazeComponent.register(Template.cardsContainer, CardsContainer);
+`;
+    const components = parseComponent(source, "cardsContainer.js");
+    assert.equal(components.length, 1);
+    const names = components[0].contextDataFields.map(f => f.name);
+    assert.deepEqual(names.sort(), ["docs", "ready", "renderNoItems", "transformDocs"].sort());
+    const rni = components[0].contextDataFields.find(f => f.name === "renderNoItems");
+    assert.ok(rni.type.includes("visual"));
+    assert.ok(rni.type.includes("message"));
+  });
+});

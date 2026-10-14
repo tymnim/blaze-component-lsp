@@ -1,9 +1,18 @@
 // @ts-check
 const { DiagnosticSeverity } = require("vscode-languageserver");
-const { parseHTML, flattenExpressions } = require("../parsers/spacebarsParser");
+const { parseHTML } = require("../parsers/spacebarsParser");
+const {
+  walkWithEachScopes,
+  resolvePathType,
+  isCorrelatedTemplateDataPair,
+  classifyTemplateNameType,
+  extractTemplateLiteralName,
+  contextDataTypeForTemplate
+} = require("../typescript/spacebarsTypeScope");
 
 /**
  * @typedef {import("../indexer/projectIndex").ProjectIndex} ProjectIndex
+ * @typedef {import("../typescript/spacebarsTypeScope").EachScope} EachScope
  */
 
 const BUILTIN_HELPERS = new Set(["if", "unless", "each", "with", "let", "else"]);
@@ -46,18 +55,21 @@ function getDiagnostics(index, filePath, source, config) {
       continue;
     }
 
-    const allExpressions = flattenExpressions(template.expressions);
     const helperNames = new Set(component.helpers.map(h => h.name));
     for (const g of index.getGlobalHelpers()) {
       helperNames.add(g.name);
     }
     const contextFieldNames = new Set(component.contextDataFields.map(f => f.name));
 
-    for (const expr of allExpressions) {
-      if (expr.type === "Comment") continue;
+    walkWithEachScopes(template.expressions, (expr, scopes) => {
+      if (expr.type === "Comment") return;
 
       if (expr.type === "PartialExpression") {
         const partialName = expr.path;
+        if (partialName === "Template.dynamic") {
+          checkTemplateDynamic(index, expr, diagnostics, source, typeSeverity, template.name, helperNames, contextFieldNames, scopes);
+          return;
+        }
         if (!BUILTIN_TEMPLATES.has(partialName) && !index.getTemplate(partialName)) {
           diagnostics.push({
             range: {
@@ -72,46 +84,52 @@ function getDiagnostics(index, filePath, source, config) {
           const hasHash = expr.hash && Object.keys(expr.hash).length > 0;
           const hasParams = expr.params && expr.params.length > 0;
           if (hasHash || hasParams) {
-            checkPartialArgs(index, partialName, expr, diagnostics, source, typeSeverity, template.name, helperNames, contextFieldNames);
+            checkPartialArgs(index, partialName, expr, diagnostics, source, typeSeverity, template.name, helperNames, contextFieldNames, scopes);
           }
         }
-        continue;
+        return;
       }
 
       if (expr.type === "BlockExpression" && BUILTIN_HELPERS.has(expr.path)) {
         if (expr.params) {
           for (const param of expr.params) {
-            if (param.type === "PathExpression" && !param.value.includes(".")) {
-              const name = param.value;
-              if (!BUILTIN_HELPERS.has(name) && !helperNames.has(name) && !contextFieldNames.has(name)) {
-                diagnostics.push({
-                  range: {
-                    start: { line: param.loc.start.line, character: param.loc.start.column },
-                    end: { line: param.loc.end.line, character: param.loc.end.column }
-                  },
-                  severity: DiagnosticSeverity.Warning,
-                  source: "blaze-component-lsp",
-                  message: `Unknown helper or data field "${name}" in template "${template.name}"`
-                });
-              }
+            if (param.type === "PathExpression") {
+              checkPathKnown(param, diagnostics, template.name, helperNames, contextFieldNames, scopes);
             }
           }
         }
-        continue;
+        return;
       }
 
       if (expr.type === "BlockExpression") {
         const blockTemplate = index.getTemplate(expr.path);
         if (blockTemplate && blockTemplate.isBlockTemplate) {
-          checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, template.name, helperNames, contextFieldNames);
-          continue;
+          checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, template.name, helperNames, contextFieldNames, scopes);
+          return;
         }
       }
 
       if (expr.type === "MustacheExpression" || expr.type === "RawExpression") {
         const name = expr.path;
-        if (name.includes(".")) continue; // Dotted paths (e.g., item.name) — skip
-        if (BUILTIN_HELPERS.has(name)) continue;
+        if (name.includes(".")) {
+          // Allow blockParam.prop — only warn if root is unknown and not a block param
+          const root = name.split(".")[0];
+          const isBlockParam = scopes.some(s => s.param === root);
+          if (!isBlockParam && !helperNames.has(root) && !contextFieldNames.has(root) && !BUILTIN_HELPERS.has(root)) {
+            diagnostics.push({
+              range: {
+                start: { line: expr.loc.start.line, character: expr.loc.start.column },
+                end: { line: expr.loc.end.line, character: expr.loc.end.column }
+              },
+              severity: DiagnosticSeverity.Warning,
+              source: "blaze-component-lsp",
+              message: `Unknown helper or data field "${root}" in template "${template.name}"`
+            });
+          }
+          return;
+        }
+        if (BUILTIN_HELPERS.has(name)) return;
+        if (scopes.some(s => s.param === name)) return;
 
         if (!helperNames.has(name) && !contextFieldNames.has(name)) {
           diagnostics.push({
@@ -125,26 +143,224 @@ function getDiagnostics(index, filePath, source, config) {
           });
         }
       }
-    }
+    });
   }
 
   return diagnostics;
 }
 
 /**
- * Check hash arguments passed to a partial against its context data type.
- * @param {ProjectIndex} index
- * @param {string} partialName
- * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
+ * @param {import("../parsers/spacebarsParser").SpacebarsParam} param
  * @param {import("vscode-languageserver").Diagnostic[]} diagnostics
+ * @param {string} sourceTemplateName
+ * @param {Set<string>} helperNames
+ * @param {Set<string>} contextFieldNames
+ * @param {EachScope[]} scopes
  */
+function checkPathKnown(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, scopes) {
+  if (!param) return;
+
+  // (helper arg…) — validate helper name + nested path args
+  if (param.type === "SubExpression") {
+    const helperName = param.value;
+    if (helperName && !BUILTIN_HELPERS.has(helperName) && !helperNames.has(helperName) && !contextFieldNames.has(helperName)) {
+      diagnostics.push({
+        range: {
+          start: { line: param.loc.start.line, character: param.loc.start.column },
+          end: { line: param.loc.end.line, character: param.loc.end.column }
+        },
+        severity: DiagnosticSeverity.Warning,
+        source: "blaze-component-lsp",
+        message: `Unknown helper or data field "${helperName}" in template "${sourceTemplateName}"`
+      });
+    }
+    if (param.params) {
+      for (const p of param.params) {
+        if (p.type === "PathExpression" || p.type === "SubExpression") {
+          checkPathKnown(p, diagnostics, sourceTemplateName, helperNames, contextFieldNames, scopes);
+        }
+      }
+    }
+    return;
+  }
+
+  if (param.type !== "PathExpression") return;
+
+  const name = param.value;
+  if (!name || BUILTIN_HELPERS.has(name)) return;
+
+  if (name.includes(".")) {
+    const root = name.split(".")[0];
+    if (scopes.some(s => s.param === root)) return;
+    if (!helperNames.has(root) && !contextFieldNames.has(root)) {
+      diagnostics.push({
+        range: {
+          start: { line: param.loc.start.line, character: param.loc.start.column },
+          end: { line: param.loc.end.line, character: param.loc.end.column }
+        },
+        severity: DiagnosticSeverity.Warning,
+        source: "blaze-component-lsp",
+        message: `Unknown helper or data field "${root}" in template "${sourceTemplateName}"`
+      });
+    }
+    return;
+  }
+
+  if (scopes.some(s => s.param === name)) return;
+  if (!helperNames.has(name) && !contextFieldNames.has(name)) {
+    diagnostics.push({
+      range: {
+        start: { line: param.loc.start.line, character: param.loc.start.column },
+        end: { line: param.loc.end.line, character: param.loc.end.column }
+      },
+      severity: DiagnosticSeverity.Warning,
+      source: "blaze-component-lsp",
+      message: `Unknown helper or data field "${name}" in template "${sourceTemplateName}"`
+    });
+  }
+}
+
 /**
+ * Validate {{> Template.dynamic template=... data=...}}.
  * @param {ProjectIndex} index
- * @param {string} partialName
  * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
  * @param {import("vscode-languageserver").Diagnostic[]} diagnostics
  * @param {string} source
+ * @param {import("vscode-languageserver").DiagnosticSeverity} typeSeverity
+ * @param {string} sourceTemplateName
+ * @param {Set<string>} helperNames
+ * @param {Set<string>} contextFieldNames
+ * @param {EachScope[]} scopes
  */
+function checkTemplateDynamic(index, expr, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames, scopes) {
+  const hash = expr.hash || {};
+  const templateParam = hash.template;
+  const dataParam = hash.data;
+
+  if (!templateParam) {
+    diagnostics.push({
+      range: {
+        start: { line: expr.loc.start.line, character: expr.loc.start.column },
+        end: { line: expr.loc.end.line, character: expr.loc.end.column }
+      },
+      severity: typeSeverity,
+      source: "blaze-component-lsp",
+      message: `Template.dynamic requires a "template" argument`
+    });
+    return;
+  }
+
+  // Correlated each-in pair: skip data/template mismatch
+  if (isCorrelatedTemplateDataPair(index, sourceTemplateName, templateParam, dataParam, scopes)) {
+    // Still warn if template prop type is plain string
+    const tType = resolvePathType(index, sourceTemplateName, templateParam.value, scopes);
+    const kind = classifyTemplateNameType(index, tType);
+    if (kind === "string") {
+      diagnostics.push({
+        range: findHashKeyRange(source, expr, "template"),
+        severity: DiagnosticSeverity.Warning,
+        source: "blaze-component-lsp",
+        message: `Template.dynamic "template" is typed as string — prefer import("blaze-component-lsp").Template`
+      });
+    }
+    return;
+  }
+
+  /** @type {string|undefined} */
+  let concreteName;
+  /** @type {string|undefined} */
+  let templateTypeStr;
+
+  if (templateParam.type === "StringLiteral") {
+    concreteName = templateParam.value;
+  } else if (templateParam.type === "PathExpression" || templateParam.type === "SubExpression") {
+    checkPathKnown(templateParam, diagnostics, sourceTemplateName, helperNames, contextFieldNames, scopes);
+    // SubExpression `(template doc)` → resolve return type of helper `template`
+    const pathForType = templateParam.type === "SubExpression"
+      ? templateParam.value
+      : templateParam.value;
+    templateTypeStr = resolvePathType(index, sourceTemplateName, pathForType, scopes);
+    const litFromType = extractTemplateLiteralName(templateTypeStr);
+    if (litFromType) concreteName = litFromType;
+
+    const kind = classifyTemplateNameType(index, templateTypeStr);
+    if (kind === "string") {
+      diagnostics.push({
+        range: findHashKeyRange(source, expr, "template"),
+        severity: DiagnosticSeverity.Warning,
+        source: "blaze-component-lsp",
+        message: `Template.dynamic "template" is typed as string — prefer import("blaze-component-lsp").Template`
+      });
+    } else if (kind === "unknown" && templateTypeStr) {
+      // leave alone — may still be Template alias we didn't classify
+    }
+  }
+
+  if (concreteName) {
+    if (!index.getTemplate(concreteName)) {
+      diagnostics.push({
+        range: findHashKeyRange(source, expr, "template"),
+        severity: DiagnosticSeverity.Error,
+        source: "blaze-component-lsp",
+        message: `Template "${concreteName}" is not defined`
+      });
+      return;
+    }
+
+    if (dataParam) {
+      const expected = contextDataTypeForTemplate(index, concreteName);
+      checkDynamicDataArg(index, dataParam, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames, scopes, expected, concreteName, expr);
+    }
+    return;
+  }
+
+  // Wide Template union / typed Template — if data is present and not correlated, we can't refine
+  if (dataParam && (dataParam.type === "PathExpression" || dataParam.type === "SubExpression")) {
+    checkPathKnown(dataParam, diagnostics, sourceTemplateName, helperNames, contextFieldNames, scopes);
+  }
+}
+
+/**
+ * @param {ProjectIndex} index
+ * @param {import("../parsers/spacebarsParser").SpacebarsParam} dataParam
+ * @param {import("vscode-languageserver").Diagnostic[]} diagnostics
+ * @param {string} source
+ * @param {import("vscode-languageserver").DiagnosticSeverity} typeSeverity
+ * @param {string} sourceTemplateName
+ * @param {Set<string>} helperNames
+ * @param {Set<string>} contextFieldNames
+ * @param {EachScope[]} scopes
+ * @param {string|undefined} expectedType
+ * @param {string} concreteName
+ * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
+ */
+function checkDynamicDataArg(index, dataParam, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames, scopes, expectedType, concreteName, expr) {
+  if (!expectedType) return;
+
+  if (dataParam.type === "PathExpression") {
+    checkPathExpressionValue(dataParam, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `data of Template.dynamic → "${concreteName}"`, scopes);
+    return;
+  }
+
+  const actualType = LITERAL_TYPE_MAP[dataParam.type];
+  if (actualType && !typesAssignable(index, actualType, expectedType)) {
+    // Also try assignability against reconstructed object/primitive from index fields
+    const fields = index.getComponentForTemplate(concreteName)?.contextDataFields || [];
+    let fallbackExpected = expectedType;
+    if (fields.length === 1 && fields[0].name === "data") {
+      fallbackExpected = fields[0].type;
+    }
+    if (!typesAssignable(index, actualType, fallbackExpected)) {
+      diagnostics.push({
+        range: findHashKeyRange(source, expr, "data"),
+        severity: typeSeverity,
+        source: "blaze-component-lsp",
+        message: `Type "${actualType}" is not assignable to ContextData of template "${concreteName}"`
+      });
+    }
+  }
+}
+
 /**
  * @param {ProjectIndex} index
  * @param {string} partialName
@@ -155,14 +371,14 @@ function getDiagnostics(index, filePath, source, config) {
  * @param {string} sourceTemplateName
  * @param {Set<string>} helperNames
  * @param {Set<string>} contextFieldNames
+ * @param {EachScope[]} scopes
  */
-function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames) {
+function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames, scopes) {
   const targetComponent = index.getComponentForTemplate(partialName);
   const fields = targetComponent ? targetComponent.contextDataFields : [];
   const hasTypeDef = fields.length > 0;
   const isSingleDataField = hasTypeDef && fields.length === 1 && fields[0].name === "data";
 
-  // Positional args: {{> template arg}}
   if (expr.params && expr.params.length > 0) {
     if (!hasTypeDef) {
       for (const param of expr.params) {
@@ -179,7 +395,7 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
       const expectedType = fields[0].type;
       const param = expr.params[0];
       const actualType = LITERAL_TYPE_MAP[param.type];
-      if (actualType && !typeMatches(actualType, expectedType)) {
+      if (actualType && !typesAssignable(index, actualType, expectedType)) {
         diagnostics.push({
           range: findParamValueRange(source, expr, param.value),
           severity: typeSeverity,
@@ -187,7 +403,7 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
           message: `Type "${actualType}" is not assignable to type "${expectedType}" of template "${partialName}"`
         });
       } else if (param.type === "PathExpression") {
-        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `template "${partialName}"`);
+        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `template "${partialName}"`, scopes);
       }
       return;
     }
@@ -195,10 +411,9 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
 
   if (isSingleDataField) return;
 
-  // Hash args: {{> template key=value}}
   const fieldMap = hasTypeDef ? new Map(fields.map(f => [f.name, f.type])) : null;
 
-  for (const [key, param] of Object.entries(expr.hash)) {
+  for (const [key, param] of Object.entries(expr.hash || {})) {
     if (!fieldMap) {
       diagnostics.push({
         range: findHashKeyRange(source, expr, key),
@@ -216,7 +431,7 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
     } else {
       const expectedType = fieldMap.get(key);
       const actualType = LITERAL_TYPE_MAP[param.type];
-      if (actualType && expectedType && !typeMatches(actualType, expectedType)) {
+      if (actualType && expectedType && !typesAssignable(index, actualType, expectedType)) {
         diagnostics.push({
           range: findHashKeyRange(source, expr, key),
           severity: typeSeverity,
@@ -224,14 +439,13 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
           message: `Type "${actualType}" is not assignable to type "${expectedType}" for property "${key}" of template "${partialName}"`
         });
       } else if (param.type === "PathExpression") {
-        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `property "${key}" of template "${partialName}"`);
+        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `property "${key}" of template "${partialName}"`, scopes);
       }
     }
   }
 }
 
 /**
- * Find the source range of `key=value` within an expression.
  * @param {string} source
  * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
  * @param {string} key
@@ -259,7 +473,6 @@ function findHashKeyRange(source, expr, key) {
 }
 
 /**
- * Validate a PathExpression value: check it exists and optionally check return type.
  * @param {import("../parsers/spacebarsParser").SpacebarsParam} param
  * @param {import("vscode-languageserver").Diagnostic[]} diagnostics
  * @param {string} sourceTemplateName
@@ -268,48 +481,37 @@ function findHashKeyRange(source, expr, key) {
  * @param {ProjectIndex} [index]
  * @param {string} [expectedType]
  * @param {import("vscode-languageserver").DiagnosticSeverity} [typeSeverity]
- * @param {string} [contextLabel] - e.g. 'property "checked" of template "foo"'
+ * @param {string} [contextLabel]
+ * @param {EachScope[]} [scopes]
  */
-function checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, contextLabel) {
+function checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, contextLabel, scopes = []) {
   const name = param.value;
-  if (!name || name.includes(".") || BUILTIN_HELPERS.has(name)) return;
+  if (!name || BUILTIN_HELPERS.has(name)) return;
 
-  if (!helperNames.has(name) && !contextFieldNames.has(name)) {
-    diagnostics.push({
-      range: {
-        start: { line: param.loc.start.line, character: param.loc.start.column },
-        end: { line: param.loc.end.line, character: param.loc.end.column }
-      },
-      severity: DiagnosticSeverity.Warning,
-      source: "blaze-component-lsp",
-      message: `Unknown helper or data field "${name}" in template "${sourceTemplateName}"`
-    });
-    return;
-  }
+  checkPathKnown(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, scopes);
 
   if (!index || !expectedType || !typeSeverity) return;
 
-  const sourceComponent = index.getComponentForTemplate(sourceTemplateName);
-  if (!sourceComponent) return;
+  let actualType = resolvePathType(index, sourceTemplateName, name, scopes);
 
-  let actualType;
-  const helper = sourceComponent.helpers.find(h => h.name === name);
-  if (helper && helper.returnType) {
-    actualType = helper.returnType;
-  } else {
-    const field = sourceComponent.contextDataFields.find(f => f.name === name);
-    if (field) {
-      actualType = field.type;
-    } else {
-      const globalHelper = index.getGlobalHelper(name);
-      if (globalHelper && globalHelper.returnType) {
-        actualType = globalHelper.returnType;
+  // Fallback for non-dotted helpers without going through scopes
+  if (!actualType && !name.includes(".")) {
+    const sourceComponent = index.getComponentForTemplate(sourceTemplateName);
+    if (sourceComponent) {
+      const helper = sourceComponent.helpers.find(h => h.name === name);
+      if (helper && helper.returnType) actualType = helper.returnType;
+      else {
+        const field = sourceComponent.contextDataFields.find(f => f.name === name);
+        if (field) actualType = field.type;
       }
+    }
+    if (!actualType) {
+      const globalHelper = index.getGlobalHelper(name);
+      if (globalHelper && globalHelper.returnType) actualType = globalHelper.returnType;
     }
   }
 
-  if (actualType && !typeMatches(actualType, expectedType)) {
-    const label = contextLabel || `expected "${expectedType}"`;
+  if (actualType && !typesAssignable(index, actualType, expectedType)) {
     diagnostics.push({
       range: {
         start: { line: param.loc.start.line, character: param.loc.start.column },
@@ -334,18 +536,13 @@ const LITERAL_TYPE_MAP = {
  * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
  * @param {import("vscode-languageserver").Diagnostic[]} diagnostics
  * @param {string} source
- */
-/**
- * @param {ProjectIndex} index
- * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
- * @param {import("vscode-languageserver").Diagnostic[]} diagnostics
- * @param {string} source
  * @param {import("vscode-languageserver").DiagnosticSeverity} typeSeverity
  * @param {string} sourceTemplateName
  * @param {Set<string>} helperNames
  * @param {Set<string>} contextFieldNames
+ * @param {EachScope[]} scopes
  */
-function checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames) {
+function checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, sourceTemplateName, helperNames, contextFieldNames, scopes) {
   const targetComponent = index.getComponentForTemplate(expr.path);
   if (!targetComponent) return;
 
@@ -358,7 +555,7 @@ function checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, 
     const expectedType = fields[0].type;
     const param = expr.params[0];
     const actualType = LITERAL_TYPE_MAP[param.type];
-    if (actualType && !typeMatches(actualType, expectedType)) {
+    if (actualType && !typesAssignable(index, actualType, expectedType)) {
       const range = findParamValueRange(source, expr, param.value);
       diagnostics.push({
         range,
@@ -367,7 +564,7 @@ function checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, 
         message: `Type "${actualType}" is not assignable to type "${expectedType}"`
       });
     } else if (param.type === "PathExpression") {
-      checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `block template "${expr.path}"`);
+      checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `block template "${expr.path}"`, scopes);
     }
   }
 
@@ -382,14 +579,13 @@ function checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, 
           message: `"${key}" does not exist on context data of block template "${expr.path}"`
         });
       } else if (param.type === "PathExpression") {
-        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, fieldMap.get(key), typeSeverity, `property "${key}" of block template "${expr.path}"`);
+        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, fieldMap.get(key), typeSeverity, `property "${key}" of block template "${expr.path}"`, scopes);
       }
     }
   }
 }
 
 /**
- * Find the range of a positional param value in the source.
  * @param {string} source
  * @param {import("../parsers/spacebarsParser").SpacebarsNode} expr
  * @param {string} value
@@ -415,12 +611,15 @@ function findParamValueRange(source, expr, value) {
 }
 
 /**
- * Check if an actual type is compatible with an expected type.
+ * @param {ProjectIndex} index
  * @param {string} actual
  * @param {string} expected
  * @returns {boolean}
  */
-function typeMatches(actual, expected) {
+function typesAssignable(index, actual, expected) {
+  if (typeof index.isTypeAssignable === "function") {
+    return index.isTypeAssignable(actual, expected);
+  }
   if (actual === expected) return true;
   const parts = expected.split(/\s*\|\s*/);
   return parts.some(p => p.trim() === actual || p.trim() === "any" || p.trim() === "unknown");

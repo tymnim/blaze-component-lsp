@@ -1,0 +1,9 @@
+<template name="tabsPage">
+  {{#each tab in tabs}}
+    {{> Template.dynamic template=tab.template data=tab.data}}
+  {{/each}}
+
+  {{> Template.dynamic template=pickedTemplate data=badData}}
+  {{> Template.dynamic template="template1" data=okData}}
+  {{> Template.dynamic template="missingTpl" data=x}}
+</template>

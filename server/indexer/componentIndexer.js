@@ -1,15 +1,24 @@
 // @ts-check
 const fs = require("node:fs");
-const path = require("node:path");
 const { parseComponent, findGlobalHelpers } = require("../parsers/componentParser");
+const {
+  resolveComponentTypes,
+  resolveGlobalHelperTypes
+} = require("../typescript/resolveComponentTypes");
 
 /**
  * @typedef {import("../parsers/componentParser").ComponentInfo} ComponentInfo
  * @typedef {import("../parsers/componentParser").GlobalHelperInfo} GlobalHelperInfo
+ * @typedef {import("../typescript/typeService").TypeService} TypeService
  */
 
 class ComponentIndexer {
-  constructor() {
+  /**
+   * @param {TypeService|null} [typeService]
+   */
+  constructor(typeService = null) {
+    /** @type {TypeService|null} */
+    this.typeService = typeService;
     /** @type {Map<string, ComponentInfo>} templateName → ComponentInfo */
     this.components = new Map();
     /** @type {Map<string, ComponentInfo[]>} filePath → ComponentInfo[] */
@@ -43,15 +52,25 @@ class ComponentIndexer {
       this._mtimes.set(filePath, Date.now());
     }
 
+    if (this.typeService) {
+      this.typeService.updateFile(filePath, source);
+    }
+
     this.removeFile(filePath);
 
     const components = parseComponent(source, filePath);
+    if (this.typeService) {
+      resolveComponentTypes(components, this.typeService, filePath);
+    }
     for (const comp of components) {
       this.components.set(comp.templateName, comp);
     }
     this.fileComponents.set(filePath, components);
 
     const globals = findGlobalHelpers(source, filePath);
+    if (this.typeService) {
+      resolveGlobalHelperTypes(globals, this.typeService, filePath);
+    }
     for (const g of globals) {
       this.globalHelpers.set(g.name, g);
     }
@@ -68,6 +87,7 @@ class ComponentIndexer {
         const stat = fs.statSync(filePath);
         const lastIndexed = this._mtimes.get(filePath) || 0;
         if (stat.mtimeMs > lastIndexed) {
+          if (this.typeService) this.typeService.invalidateFile(filePath);
           this.indexFile(filePath);
           changed = true;
         }

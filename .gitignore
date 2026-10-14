@@ -1,2 +1,5 @@
 project-example
 node_modules
+.blaze-component-lsp
+**/.blaze-component-lsp/
+monorepo-example

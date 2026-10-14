@@ -282,6 +282,71 @@ The CLI flag `--error-on-type-mismatch` overrides this config when set.
 
 The LSP server picks up changes to this file automatically — no restart required.
 
+### TypeScript / `tsconfig.json`
+
+Type resolution uses a real TypeScript LanguageService per `.meteor` root. For best results, put a `tsconfig.json` next to `.meteor` that:
+
+- Enables `allowJs` / `checkJs` (defaults if omitted)
+- Maps Meteor packages via `compilerOptions.paths`, especially `meteor/znewsham:blaze-component` to your BlazeComponent `.d.ts`
+- Maps `"blaze-component-lsp"` to the generated registry (see below)
+
+Example:
+
+```json
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "meteor/znewsham:blaze-component": [
+        "packages/blaze-component/blaze-component.d.ts"
+      ],
+      "blaze-component-lsp": [
+        ".blaze-component-lsp/templates.d.ts"
+      ]
+    }
+  }
+}
+```
+
+Without usable path mappings, ContextData/helper types fall back to JSDoc string parsing. Assignability checks still use the TypeScript checker when type strings can be parsed.
+
+### Generated template registry
+
+On scan/update the LSP writes `.blaze-component-lsp/templates.d.ts` with:
+
+- `Template` — union of known template name literals
+- `ContextDataFrom<T>` — ContextData for template `T`
+- `TemplateEntry<TExtras>` — optional correlated `{ template, data }` helper
+
+Add `.blaze-component-lsp/` to `.gitignore`. Map it in `tsconfig` as shown above so JSDoc `import("blaze-component-lsp").Template` resolves in the editor.
+
+User-defined shapes (preferred over any fixed “Tab” type):
+
+```js
+/**
+ * @template {import("blaze-component-lsp").Template} T
+ * @typedef {{ template: T, data: import("blaze-component-lsp").ContextDataFrom<T>, name: string }} Tab
+ */
+
+/** @returns {Tab[]} */
+tabs() {
+  return [
+    { name: "tab 1", template: "template1", data: { prop1: 1 } },
+    { name: "tab 2", template: "template2", data: { title: "hello" } }
+  ];
+}
+```
+
+```html
+{{#each tab in tabs}}
+  {{> Template.dynamic template=tab.template data=tab.data}}
+{{/each}}
+```
+
+`Template.dynamic` checks literal template names against the registry and ContextData; correlated `tab.template` + `tab.data` from the same `{{#each}}` binding are accepted by construction.
+
 ## Project Structure
 
 ```
@@ -296,6 +361,11 @@ blaze-component-lsp/
 │   │   ├── projectIndex.js      # Per-project index
 │   │   ├── templateIndexer.js   # HTML template index
 │   │   └── componentIndexer.js  # JS component index
+│   ├── typescript/
+│   │   ├── typeService.js              # TS LanguageService per .meteor root
+│   │   ├── resolveComponentTypes.js    # ContextData / helper type resolution
+│   │   ├── templateRegistryEmitter.js  # Generated Template / ContextDataFrom .d.ts
+│   │   └── spacebarsTypeScope.js       # each-in scopes + Template.dynamic typing
 │   ├── providers/
 │   │   ├── completionProvider.js
 │   │   ├── hoverProvider.js
@@ -330,6 +400,7 @@ npm test                    # all tests
 npm run test:parsers        # parser tests only
 npm run test:indexer         # indexer tests only
 npm run test:providers       # provider tests only
+npm run test:typescript      # TypeService / checker integration tests
 ```
 
 ## Ideas for the future

@@ -80,7 +80,7 @@ function createServer(connection) {
       index = new ProjectIndex(meteorRoot);
       index.scan();
       projectIndexes.set(meteorRoot, index);
-      connection.console.log(`[blaze-component-lsp] Indexed app at ${meteorRoot}: ${index.templateIndexer.size} templates, ${index.componentIndexer.size} components`);
+      connection.console.log(`[blaze-component-lsp] Indexed app at ${meteorRoot}: ${index.templateIndexer.size} templates, ${index.componentIndexer.size} components (TypeService enabled)`);
     }
     return index;
   }

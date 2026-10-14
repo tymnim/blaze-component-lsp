@@ -13,7 +13,8 @@
     "test": "node --test test/**/*.test.js",
     "test:parsers": "node --test test/parsers/*.test.js",
     "test:indexer": "node --test test/indexer/*.test.js",
-    "test:providers": "node --test test/providers/*.test.js"
+    "test:providers": "node --test test/providers/*.test.js",
+    "test:typescript": "node --test test/typescript/*.test.js"
   },
   "dependencies": {
     "typescript": "^5.8.3",

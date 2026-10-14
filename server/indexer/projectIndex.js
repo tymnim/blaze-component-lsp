@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { TemplateIndexer } = require("./templateIndexer");
 const { ComponentIndexer } = require("./componentIndexer");
+const { TypeService } = require("../typescript/typeService");
+const { createDebouncedEmitter, getRegistryPath } = require("../typescript/templateRegistryEmitter");
 
 /**
  * @typedef {import("../parsers/spacebarsParser").TemplateBlock} TemplateBlock
@@ -23,7 +25,8 @@ function isFileSync(p) {
 
 const IGNORE_DIRS = new Set([
   "node_modules", ".meteor", ".git", ".deploy",
-  "cordova-build-override", "public", "resources"
+  "cordova-build-override", "public", "resources",
+  ".blaze-component-lsp"
 ]);
 
 class ProjectIndex {
@@ -32,10 +35,12 @@ class ProjectIndex {
    */
   constructor(rootPath) {
     this.rootPath = rootPath;
+    this.typeService = new TypeService(rootPath);
     this.templateIndexer = new TemplateIndexer();
-    this.componentIndexer = new ComponentIndexer();
+    this.componentIndexer = new ComponentIndexer(this.typeService);
     /** @type {Set<string>} */
     this._indexedFiles = new Set();
+    this._registryEmitter = createDebouncedEmitter(this);
   }
 
   /**
@@ -43,6 +48,29 @@ class ProjectIndex {
    */
   scan() {
     this._scanDirectory(this.rootPath);
+    const result = this._registryEmitter.flush();
+    this._maybeWarnMissingRegistryPath(result.path);
+  }
+
+  /**
+   * Log once if tsconfig does not map blaze-component-lsp (best-effort).
+   * @param {string} registryPath
+   */
+  _maybeWarnMissingRegistryPath(registryPath) {
+    if (this._warnedMissingPath) return;
+    const tsconfigPath = path.join(this.rootPath, "tsconfig.json");
+    try {
+      const raw = fs.readFileSync(tsconfigPath, "utf-8");
+      if (!raw.includes("blaze-component-lsp")) {
+        this._warnedMissingPath = true;
+        // Soft hint for operators watching LSP / CLI stderr
+        console.error(
+          `[blaze-component-lsp] Tip: map "blaze-component-lsp" → "${path.relative(this.rootPath, registryPath)}" in tsconfig paths so import(\"blaze-component-lsp\").Template resolves in the editor.`
+        );
+      }
+    } catch {
+      // no tsconfig
+    }
   }
 
   /**
@@ -53,8 +81,10 @@ class ProjectIndex {
   updateFile(filePath, source) {
     if (filePath.endsWith(".html")) {
       this.templateIndexer.indexFile(filePath, source);
+      this._registryEmitter.schedule();
     } else if (filePath.endsWith(".js") || filePath.endsWith(".jsx")) {
       this.componentIndexer.indexFile(filePath, source);
+      this._registryEmitter.schedule();
     }
   }
 
@@ -65,10 +95,39 @@ class ProjectIndex {
   removeFile(filePath) {
     if (filePath.endsWith(".html")) {
       this.templateIndexer.removeFile(filePath);
+      this._registryEmitter.schedule();
     } else if (filePath.endsWith(".js") || filePath.endsWith(".jsx")) {
       this.componentIndexer.removeFile(filePath);
+      this.typeService.removeFile(filePath);
+      this._registryEmitter.schedule();
     }
     this._indexedFiles.delete(filePath);
+  }
+
+  /**
+   * Flush the template registry `.d.ts` immediately.
+   * @returns {{ path: string, written: boolean }}
+   */
+  emitTemplateRegistry() {
+    return this._registryEmitter.flush();
+  }
+
+  /**
+   * Absolute path to the generated templates.d.ts for this project.
+   * @returns {string}
+   */
+  getTemplateRegistryPath() {
+    return getRegistryPath(this.rootPath);
+  }
+
+  /**
+   * Check whether actualType is assignable to expectedType via the TS checker.
+   * @param {string} actualType
+   * @param {string} expectedType
+   * @returns {boolean}
+   */
+  isTypeAssignable(actualType, expectedType) {
+    return this.typeService.isAssignableByString(actualType, expectedType);
   }
 
   /**
@@ -76,7 +135,9 @@ class ProjectIndex {
    * @returns {boolean} true if anything was refreshed
    */
   refreshStaleComponents() {
-    return this.componentIndexer.refreshStaleFiles();
+    const changed = this.componentIndexer.refreshStaleFiles();
+    if (changed) this._registryEmitter.schedule();
+    return changed;
   }
 
   /**

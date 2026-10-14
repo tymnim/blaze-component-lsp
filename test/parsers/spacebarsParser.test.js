@@ -327,4 +327,16 @@ describe("parseHTML — Template.dynamic", () => {
     assert.ok(expr.hash.template);
     assert.ok(expr.hash.data);
   });
+
+  it("should parse hash subexpressions like template=(template doc)", () => {
+    const source = '<template name="t">\n  {{> Template.dynamic template=(template doc) data=doc}}\n</template>';
+    const templates = parseHTML(source);
+    const expr = templates[0].expressions[0];
+    assert.equal(expr.hash.template.type, "SubExpression");
+    assert.equal(expr.hash.template.value, "template");
+    assert.equal(expr.hash.template.params.length, 1);
+    assert.equal(expr.hash.template.params[0].value, "doc");
+    assert.equal(expr.hash.data.type, "PathExpression");
+    assert.equal(expr.hash.data.value, "doc");
+  });
 });

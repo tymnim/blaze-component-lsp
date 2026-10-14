@@ -472,6 +472,21 @@ function findTypedefsFromJSDoc(sourceFile, source) {
  * @param {string} text
  * @returns {RegExpMatchArray|null} Match with capture group 1 = type parameter content
  */
+/**
+ * True if `text[i]` is `>` that closes a type argument list (not part of `=>` or `>=`).
+ * @param {string} text
+ * @param {number} i
+ * @returns {boolean}
+ */
+function isTypeArgCloseAngle(text, i) {
+  if (text[i] !== ">") return false;
+  // `=>` arrow
+  if (i > 0 && text[i - 1] === "=") return false;
+  // `>=` comparison (unlikely in types, but safe)
+  if (i + 1 < text.length && text[i + 1] === "=") return false;
+  return true;
+}
+
 function matchBalancedExtends(text) {
   const marker = "@extends";
   const idx = text.lastIndexOf(marker);
@@ -486,7 +501,7 @@ function matchBalancedExtends(text) {
   let i = contentStart;
   while (i < text.length && depth > 0) {
     if (text[i] === "<") depth++;
-    else if (text[i] === ">") depth--;
+    else if (isTypeArgCloseAngle(text, i)) depth--;
     i++;
   }
 
@@ -499,14 +514,62 @@ function matchBalancedExtends(text) {
   return result;
 }
 
-function resolveContextData(cls, typedefs, source, sourceFile) {
-  const classStart = cls.node.getStart(sourceFile);
+/**
+ * Leading trivia / JSDoc immediately above a class (full comment, not a fixed char window).
+ * @param {{ name: string, node: ts.ClassDeclaration }} cls
+ * @param {string} source
+ * @param {ts.SourceFile} sourceFile
+ * @returns {string}
+ */
+function getLeadingTextBeforeClass(cls, source, sourceFile) {
+  const fullStart = cls.node.getFullStart();
+  const start = cls.node.getStart(sourceFile);
+  const leading = source.slice(fullStart, start);
+  if (leading.includes("@extends")) return leading;
 
-  const textBefore = source.slice(Math.max(0, classStart - 500), classStart);
+  // Fallback: walk back to the nearest /** block (handles oversized comments)
+  const searchFrom = Math.max(0, start - 20000);
+  const slice = source.slice(searchFrom, start);
+  const commentStart = slice.lastIndexOf("/**");
+  if (commentStart !== -1) return slice.slice(commentStart);
+  return slice;
+}
+
+/**
+ * Split BlazeComponent<A, B> type-arg list on the top-level comma.
+ * @param {string} typeArgsContent
+ * @returns {string[]}
+ */
+function splitTopLevelTypeArgs(typeArgsContent) {
+  /** @type {string[]} */
+  const parts = [];
+  let depth = 0;
+  let current = "";
+  for (let i = 0; i < typeArgsContent.length; i++) {
+    const ch = typeArgsContent[i];
+    if (ch === "<" || ch === "{" || ch === "(" || ch === "[") depth++;
+    else if (ch === "}" || ch === ")" || ch === "]") depth = Math.max(0, depth - 1);
+    else if (isTypeArgCloseAngle(typeArgsContent, i)) depth = Math.max(0, depth - 1);
+    else if (ch === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function resolveContextData(cls, typedefs, source, sourceFile) {
+  const textBefore = getLeadingTextBeforeClass(cls, source, sourceFile);
   const extendsMatch = matchBalancedExtends(textBefore);
 
   if (extendsMatch) {
-    const typeParam = extendsMatch[1].trim();
+    // BlazeComponent<ContextData, Settings?> — only the first type arg is ContextData
+    const typeArgs = splitTopLevelTypeArgs(extendsMatch[1].trim());
+    const typeParam = (typeArgs[0] || "").trim();
+    if (!typeParam) return [];
 
     // Check if it's a known typedef name
     const fromTypedef = typedefs.get(typeParam);
@@ -533,7 +596,8 @@ function resolveContextData(cls, typedefs, source, sourceFile) {
 
 /**
  * Parse an inline object type like `{ foo: string, bar: number[] }` into ContextFields.
- * Handles JSDoc comment artifacts (leading `*`) and multiline formatting.
+ * Handles JSDoc comment artifacts (leading `*`), multiline formatting, and hybrid
+ * `prop?: Type - description` prose (commas in descriptions must not split fields).
  * @param {string} raw
  * @returns {ContextField[]|null}
  */
@@ -551,26 +615,70 @@ function parseInlineObjectType(raw) {
 
   if (!cleaned) return null;
 
-  /** @type {ContextField[]} */
-  const fields = [];
-  // Split on commas that are not inside angle brackets or nested braces
+  // Find field starts `name:` / `name?:` at depth 0 — more robust than comma-splitting
+  // when descriptions contain commas.
+  const fieldStartRe = /([A-Za-z_$][A-Za-z0-9_$]*)(\??)\s*:/g;
+  /** @type {{ name: string, optional: boolean, start: number, valueStart: number }[]} */
+  const starts = [];
   let depth = 0;
-  let current = "";
   for (let i = 0; i < cleaned.length; i++) {
     const ch = cleaned[i];
-    if (ch === "<" || ch === "{" || ch === "(") depth++;
-    else if (ch === ">" || ch === "}" || ch === ")") depth--;
-    else if (ch === "," && depth === 0) {
+    if (ch === "<" || ch === "{" || ch === "(" || ch === "[") depth++;
+    else if (ch === ">" || ch === "}" || ch === ")" || ch === "]") {
+      if (!(ch === ">" && i > 0 && cleaned[i - 1] === "=")) depth = Math.max(0, depth - 1);
+    } else if (depth === 0) {
+      fieldStartRe.lastIndex = i;
+      const m = fieldStartRe.exec(cleaned);
+      if (m && m.index === i) {
+        starts.push({
+          name: m[1],
+          optional: m[2] === "?",
+          start: m.index,
+          valueStart: m.index + m[0].length
+        });
+        i = m.index + m[0].length - 1;
+      }
+    }
+  }
+
+  if (starts.length === 0) {
+    // Fallback: comma-split for simple `{ a: string, b: number }`
+    /** @type {ContextField[]} */
+    const fields = [];
+    depth = 0;
+    let current = "";
+    for (let i = 0; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (ch === "<" || ch === "{" || ch === "(") depth++;
+      else if (ch === ">" || ch === "}" || ch === ")") {
+        if (!(ch === ">" && i > 0 && cleaned[i - 1] === "=")) depth--;
+      } else if (ch === "," && depth === 0) {
+        const field = parseFieldEntry(current.trim());
+        if (field) fields.push(field);
+        current = "";
+        continue;
+      }
+      current += ch;
+    }
+    if (current.trim()) {
       const field = parseFieldEntry(current.trim());
       if (field) fields.push(field);
-      current = "";
-      continue;
     }
-    current += ch;
+    return fields.length > 0 ? fields : null;
   }
-  if (current.trim()) {
-    const field = parseFieldEntry(current.trim());
-    if (field) fields.push(field);
+
+  /** @type {ContextField[]} */
+  const fields = [];
+  for (let s = 0; s < starts.length; s++) {
+    const cur = starts[s];
+    const end = s + 1 < starts.length ? starts[s + 1].start : cleaned.length;
+    let value = cleaned.slice(cur.valueStart, end).trim();
+    // Drop trailing comma between fields
+    value = value.replace(/,\s*$/, "");
+    const entry = parseFieldEntry(
+      `${cur.name}${cur.optional ? "?" : ""}: ${value}`
+    );
+    if (entry) fields.push(entry);
   }
 
   return fields.length > 0 ? fields : null;
@@ -578,19 +686,40 @@ function parseInlineObjectType(raw) {
 
 /**
  * Parse a single `name: Type` or `name?: Type` entry.
+ * Strips trailing JSDoc-style ` - description` prose (not valid in TS types).
  * @param {string} entry
  * @returns {ContextField|null}
  */
 function parseFieldEntry(entry) {
-  const match = entry.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(\??):\s*(.+)$/);
+  const match = entry.match(/^([A-Za-z_$][A-Za-z0-9_$]*)(\??):\s*(.+)$/s);
   if (!match) return null;
   const name = match[1];
   const optional = match[2] === "?";
-  const type = optional ? `${match[3]} | undefined` : match[3];
+  let typeAndMaybeDesc = match[3].trim();
+
+  // Split type from ` - description` at depth 0 (hybrid JSDoc-in-object-type style)
+  let depth = 0;
+  let typeEnd = typeAndMaybeDesc.length;
+  let description;
+  for (let i = 0; i < typeAndMaybeDesc.length; i++) {
+    const ch = typeAndMaybeDesc[i];
+    if (ch === "<" || ch === "{" || ch === "(" || ch === "[") depth++;
+    else if (ch === ">" || ch === "}" || ch === ")" || ch === "]") depth--;
+    else if (depth === 0 && typeAndMaybeDesc.slice(i, i + 3) === " - ") {
+      description = typeAndMaybeDesc.slice(i + 3).trim() || undefined;
+      typeEnd = i;
+      break;
+    }
+  }
+  let type = typeAndMaybeDesc.slice(0, typeEnd).trim();
+  // Collapse leftover whitespace/newlines inside the type
+  type = type.replace(/\s+/g, " ");
+  if (optional) type = `${type} | undefined`;
+
   return {
     name,
     type,
-    description: undefined,
+    description,
     range: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }
   };
 }
@@ -691,66 +820,115 @@ function extractHelperDocs(cls, sourceFile, source) {
 }
 
 /**
- * Infer a return type from simple method bodies.
- * @param {ts.MethodDeclaration} method
+ * Infer a return type from method bodies (used when JSDoc/@returns and the checker yield any).
+ * Collects all return expressions (including nested in if/blocks) and unifies literal types.
+ * @param {ts.MethodDeclaration|ts.ArrowFunction|ts.FunctionExpression} method
  * @param {ts.SourceFile} sourceFile
- * @param {string} source
+ * @param {string} [source]
  * @returns {string|undefined}
  */
 function inferReturnType(method, sourceFile, source) {
   const body = method.body;
-  if (!body || !body.statements.length) return undefined;
+  if (!body) return undefined;
 
-  for (const stmt of body.statements) {
-    if (!ts.isReturnStatement(stmt) || !stmt.expression) continue;
-    const expr = stmt.expression;
+  /** @type {ts.Expression[]} */
+  const returns = [];
+  collectReturnExpressions(body, returns);
+  if (returns.length === 0) return undefined;
 
-    if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return "string";
-    if (ts.isNumericLiteral(expr)) return "number";
-    if (expr.kind === ts.SyntaxKind.TrueKeyword || expr.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
-    if (ts.isArrayLiteralExpression(expr)) return "Array";
-    if (ts.isObjectLiteralExpression(expr)) return "Object";
-    if (expr.kind === ts.SyntaxKind.NullKeyword) return "null";
-
-    // this.get("key") ? "a" : "b" → string
-    if (ts.isConditionalExpression(expr)) {
-      const whenTrue = expr.whenTrue;
-      const whenFalse = expr.whenFalse;
-      if (ts.isStringLiteral(whenTrue) && ts.isStringLiteral(whenFalse)) return "string";
-      if (ts.isNumericLiteral(whenTrue) && ts.isNumericLiteral(whenFalse)) return "number";
-    }
-
-    // this.get("key") → look at the key name for hints
-    if (ts.isCallExpression(expr)) {
-      const callText = source.slice(expr.expression.pos, expr.expression.end).trim();
-      if (callText === "this.get") return undefined; // generic state access
-      if (callText === "this.reactiveData" || callText === "this.nonReactiveData") return "ContextData";
-      if (callText.endsWith(".get")) return undefined;
-    }
-
-    // this.checked.get() ? "checked" : "unchecked" → string (ternary with call)
-    if (ts.isConditionalExpression(expr)) {
-      const inferredTrue = inferExprType(expr.whenTrue);
-      const inferredFalse = inferExprType(expr.whenFalse);
-      if (inferredTrue && inferredTrue === inferredFalse) return inferredTrue;
-      if (inferredTrue) return inferredTrue;
-    }
+  /** @type {Set<string>} */
+  const types = new Set();
+  for (const expr of returns) {
+    const t = inferExprType(expr, source);
+    if (t) types.add(t);
   }
 
-  return undefined;
+  if (types.size === 0) return undefined;
+  if (types.size === 1) return [...types][0];
+  // Drop null/undefined noise when other concretes exist
+  types.delete("null");
+  types.delete("undefined");
+  if (types.size === 1) return [...types][0];
+  if (types.size === 0) return undefined;
+  return [...types].sort().join(" | ");
+}
+
+/**
+ * @param {ts.Node} node
+ * @param {ts.Expression[]} out
+ */
+function collectReturnExpressions(node, out) {
+  if (ts.isReturnStatement(node) && node.expression) {
+    out.push(node.expression);
+    return;
+  }
+  // Do not descend into nested functions / methods
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  ) {
+    return;
+  }
+  ts.forEachChild(node, child => collectReturnExpressions(child, out));
 }
 
 /**
  * Infer type of a simple expression node.
  * @param {ts.Expression} expr
+ * @param {string} [source]
  * @returns {string|undefined}
  */
-function inferExprType(expr) {
+function inferExprType(expr, source) {
+  if (ts.isParenthesizedExpression(expr)) return inferExprType(expr.expression, source);
+  if (ts.isAsExpression(expr)) return inferExprType(expr.expression, source);
   if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return "string";
+  if (ts.isTemplateExpression(expr)) return "string";
   if (ts.isNumericLiteral(expr)) return "number";
   if (expr.kind === ts.SyntaxKind.TrueKeyword || expr.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
+  if (expr.kind === ts.SyntaxKind.NullKeyword) return "null";
   if (ts.isArrayLiteralExpression(expr)) return "Array";
   if (ts.isObjectLiteralExpression(expr)) return "Object";
+
+  // !x / !!x → boolean
+  if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
+    return "boolean";
+  }
+
+  // a || b || "literal"  /  a ?? b
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    if (
+      op === ts.SyntaxKind.BarBarToken ||
+      op === ts.SyntaxKind.QuestionQuestionToken
+    ) {
+      const right = inferExprType(expr.right, source);
+      const left = inferExprType(expr.left, source);
+      if (left && right && left === right) return left;
+      // Prefer the rightmost concrete type (common fallback literal pattern)
+      if (right) return right;
+      if (left) return left;
+    }
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      return inferExprType(expr.right, source) || inferExprType(expr.left, source);
+    }
+  }
+
+  if (ts.isConditionalExpression(expr)) {
+    const whenTrue = inferExprType(expr.whenTrue, source);
+    const whenFalse = inferExprType(expr.whenFalse, source);
+    if (whenTrue && whenFalse && whenTrue === whenFalse) return whenTrue;
+    if (whenTrue && whenFalse) return `${whenTrue} | ${whenFalse}`;
+    return whenTrue || whenFalse;
+  }
+
+  if (ts.isCallExpression(expr) && source) {
+    const callText = source.slice(expr.expression.pos, expr.expression.end).trim();
+    if (callText === "this.reactiveData" || callText === "this.nonReactiveData") return "ContextData";
+  }
+
   return undefined;
 }
 

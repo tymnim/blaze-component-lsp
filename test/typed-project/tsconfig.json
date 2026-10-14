@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "meteor/znewsham:blaze-component": [
+        "packages/blaze-component/blaze-component.d.ts"
+      ],
+      "meteor/templating": [
+        "packages/blaze-component/templating.d.ts"
+      ],
+      "meteor/blaze": [
+        "packages/blaze-component/templating.d.ts"
+      ],
+      "blaze-component-lsp": [
+        ".blaze-component-lsp/templates.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "imports/**/*.js",
+    "packages/**/*.d.ts",
+    ".blaze-component-lsp/**/*.d.ts"
+  ]
+}

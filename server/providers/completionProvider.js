@@ -214,10 +214,10 @@ function getTemplateNameCompletions(index) {
   items.push({
     label: "Template.dynamic",
     kind: CompletionItemKind.Module,
-    detail: "Template<{template: string, data: any}>",
+    detail: "Template<{template: Template, data: ContextDataFrom<Template>}>",
     documentation: {
       kind: "markdown",
-      value: "Dynamically render a template by name.\n\n- `template`: `string` — template name to render\n- `data`: `any` — data context passed to the template"
+      value: "Dynamically render a template by name.\n\n- `template`: `import(\"blaze-component-lsp\").Template` — template name\n- `data`: `ContextDataFrom<T>` — context data for that template\n\nPrefer typed helpers or correlated `{ template, data }` pairs from `{{#each}}`."
     },
     data: { type: "builtin", name: "Template.dynamic" }
   });

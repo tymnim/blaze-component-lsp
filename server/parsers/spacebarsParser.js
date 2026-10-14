@@ -295,34 +295,23 @@ function parseExpressionContent(inner, type, exprStart, exprEnd, content, baseLi
 
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token.includes('=') && !token.startsWith('"') && !token.startsWith("'")) {
+    if (token.includes('=') && !token.startsWith('"') && !token.startsWith("'") && !token.startsWith("(")) {
       const eqIdx = token.indexOf('=');
       const key = token.slice(0, eqIdx);
       const val = token.slice(eqIdx + 1);
       const tokenOffset = findTokenOffset(token, searchCursor);
       const valOffset = tokenOffset + eqIdx + 1;
       searchCursor = tokenOffset + token.length;
-      hash[key] = classifyParam(val, valOffset, content, baseLine, baseColumn);
+      // Hash values may be subexpressions: template=(template doc)
+      hash[key] = parseParamToken(val, valOffset, content, baseLine, baseColumn);
     } else if (token.startsWith('(') && token.endsWith(')')) {
-      const subInner = token.slice(1, -1).trim();
-      const subTokens = tokenizeExpression(subInner);
       const tokenOffset = findTokenOffset(token, searchCursor);
       searchCursor = tokenOffset + token.length;
-      const subParams = subTokens.slice(1).map(t => {
-        const tOff = findTokenOffset(t, tokenOffset);
-        return classifyParam(t, tOff, content, baseLine, baseColumn);
-      });
-      params.push({
-        type: "SubExpression",
-        value: subTokens[0] || "",
-        loc: offsetToRange(content, tokenOffset, tokenOffset + token.length, baseLine, baseColumn),
-        params: subParams,
-        hash: {}
-      });
+      params.push(parseSubExpression(token, tokenOffset, content, baseLine, baseColumn));
     } else {
       const tokenOffset = findTokenOffset(token, searchCursor);
       searchCursor = tokenOffset + token.length;
-      params.push(classifyParam(token, tokenOffset, content, baseLine, baseColumn));
+      params.push(parseParamToken(token, tokenOffset, content, baseLine, baseColumn));
     }
   }
 
@@ -401,6 +390,66 @@ function tokenizeExpression(input) {
   }
 
   return tokens;
+}
+
+/**
+ * Classify a token as a typed param, including parenthesized subexpressions.
+ * @param {string} token
+ * @param {number} exprStart
+ * @param {string} content
+ * @param {number} baseLine
+ * @param {number} baseColumn
+ * @returns {SpacebarsParam}
+ */
+function parseParamToken(token, exprStart, content, baseLine, baseColumn) {
+  if (token.startsWith("(") && token.endsWith(")")) {
+    return parseSubExpression(token, exprStart, content, baseLine, baseColumn);
+  }
+  return classifyParam(token, exprStart, content, baseLine, baseColumn);
+}
+
+/**
+ * Parse `(helper arg1 arg2)` into a SubExpression param.
+ * @param {string} token - Including surrounding parentheses
+ * @param {number} tokenOffset
+ * @param {string} content
+ * @param {number} baseLine
+ * @param {number} baseColumn
+ * @returns {SpacebarsParam}
+ */
+function parseSubExpression(token, tokenOffset, content, baseLine, baseColumn) {
+  const subInner = token.slice(1, -1).trim();
+  const subTokens = tokenizeExpression(subInner);
+  const innerStart = tokenOffset + token.indexOf(subInner);
+  /** @type {SpacebarsParam[]} */
+  const subParams = [];
+  /** @type {Object<string, SpacebarsParam>} */
+  const subHash = {};
+  let searchFrom = innerStart;
+
+  for (let i = 1; i < subTokens.length; i++) {
+    const t = subTokens[i];
+    const tOff = content.indexOf(t, searchFrom);
+    const offset = tOff !== -1 ? tOff : searchFrom;
+    searchFrom = offset + t.length;
+
+    if (t.includes("=") && !t.startsWith('"') && !t.startsWith("'") && !t.startsWith("(")) {
+      const eqIdx = t.indexOf("=");
+      const key = t.slice(0, eqIdx);
+      const val = t.slice(eqIdx + 1);
+      subHash[key] = parseParamToken(val, offset + eqIdx + 1, content, baseLine, baseColumn);
+    } else {
+      subParams.push(parseParamToken(t, offset, content, baseLine, baseColumn));
+    }
+  }
+
+  return {
+    type: "SubExpression",
+    value: subTokens[0] || "",
+    loc: offsetToRange(content, tokenOffset, tokenOffset + token.length, baseLine, baseColumn),
+    params: subParams,
+    hash: subHash
+  };
 }
 
 /**
