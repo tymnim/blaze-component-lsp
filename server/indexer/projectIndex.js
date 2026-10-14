@@ -5,6 +5,7 @@ const { TemplateIndexer } = require("./templateIndexer");
 const { ComponentIndexer } = require("./componentIndexer");
 const { TypeService } = require("../typescript/typeService");
 const { createDebouncedEmitter, getRegistryPath } = require("../typescript/templateRegistryEmitter");
+const { loadIndexCache, hydrateFromCache } = require("../typescript/indexCache");
 
 /**
  * @typedef {import("../parsers/spacebarsParser").TemplateBlock} TemplateBlock
@@ -41,15 +42,124 @@ class ProjectIndex {
     /** @type {Set<string>} */
     this._indexedFiles = new Set();
     this._registryEmitter = createDebouncedEmitter(this);
+    /** @type {boolean} */
+    this.ready = false;
+    /** @type {boolean} */
+    this.scanning = false;
+    /** @type {boolean} */
+    this.hydratedFromCache = false;
+    /** @type {number} */
+    this.generation = 0;
+    /** @type {((info: { generation: number, hydrated: boolean }) => void)|null} */
+    this._onScanComplete = null;
+    /** @type {boolean} */
+    this._bootScheduled = false;
   }
 
   /**
-   * Perform initial full scan of the project.
+   * Fast boot: hydrate from index-cache.json if present, then schedule a full
+   * background scan that rewrites registries when finished.
+   * @param {{ onScanComplete?: (info: { generation: number, hydrated: boolean }) => void }} [options]
+   * @returns {{ hydrated: boolean }}
+   */
+  boot(options = {}) {
+    if (options.onScanComplete) {
+      this._onScanComplete = options.onScanComplete;
+    }
+
+    const cache = loadIndexCache(this.rootPath);
+    if (cache) {
+      hydrateFromCache(this, cache);
+      this.hydratedFromCache = true;
+      this.ready = true;
+    } else {
+      this.hydratedFromCache = false;
+      this.ready = true; // empty but usable; completions grow as scan runs
+    }
+
+    if (!this._bootScheduled) {
+      this._bootScheduled = true;
+      this.scanning = true;
+      const hydrated = this.hydratedFromCache;
+      // Delay slightly so didOpen / first completions can run from cache first.
+      setTimeout(() => {
+        this._runBackgroundScan()
+          .catch((err) => {
+            console.error("[blaze-component-lsp] Background scan failed:", err);
+          })
+          .finally(() => {
+            this.scanning = false;
+            this.generation += 1;
+            if (this._onScanComplete) {
+              this._onScanComplete({ generation: this.generation, hydrated });
+            }
+          });
+      }, 75);
+    }
+
+    return { hydrated: this.hydratedFromCache };
+  }
+
+  /**
+   * Synchronous full scan (CLI / tests). Ensures TypeService is ready first.
    */
   scan() {
+    this.typeService.ensureReady();
+    this._indexedFiles.clear();
+    this.templateIndexer.templates.clear();
+    this.templateIndexer.fileTemplates.clear();
+    this.componentIndexer.components.clear();
+    this.componentIndexer.fileComponents.clear();
+    this.componentIndexer.globalHelpers.clear();
+    this.componentIndexer._fileGlobalHelpers.clear();
+    this.componentIndexer._mtimes.clear();
+
     this._scanDirectory(this.rootPath);
     const result = this._registryEmitter.flush();
-    this._maybeWarnMissingRegistryPath(result.path);
+    this._maybeWarnMissingRegistryPath(result.templates.path);
+    this.ready = true;
+    this.scanning = false;
+    this.generation += 1;
+  }
+
+  /**
+   * @returns {Promise<void>}
+   */
+  _yield() {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  /**
+   * Full re-index in background after boot().
+   * Phase 1: parse HTML/JS without TypeService (keeps event loop responsive).
+   * Phase 2: create LanguageService and enrich types in batches.
+   * Hydrated data stays live until the phase-1 swap.
+   * @returns {Promise<void>}
+   */
+  async _runBackgroundScan() {
+    const nextTemplates = new TemplateIndexer();
+    // typeService not ready yet → parse only, no checker
+    const nextComponents = new ComponentIndexer(this.typeService);
+    /** @type {Set<string>} */
+    const nextIndexed = new Set();
+
+    await this._scanDirectoryIntoChunked(
+      this.rootPath,
+      nextTemplates,
+      nextComponents,
+      nextIndexed
+    );
+
+    this.templateIndexer = nextTemplates;
+    this.componentIndexer = nextComponents;
+    this._indexedFiles = nextIndexed;
+
+    // Expensive: LanguageService over the project, then enrich in batches
+    this.typeService.ensureReady();
+    await this.componentIndexer.enrichTypesChunked(() => this._yield(), 8);
+
+    const result = this._registryEmitter.flush();
+    this._maybeWarnMissingRegistryPath(result.templates.path);
   }
 
   /**
@@ -63,7 +173,6 @@ class ProjectIndex {
       const raw = fs.readFileSync(tsconfigPath, "utf-8");
       if (!raw.includes("blaze-component-lsp")) {
         this._warnedMissingPath = true;
-        // Soft hint for operators watching LSP / CLI stderr
         console.error(
           `[blaze-component-lsp] Tip: map "blaze-component-lsp" → "${path.relative(this.rootPath, registryPath)}" in tsconfig paths so import(\"blaze-component-lsp\").Template resolves in the editor.`
         );
@@ -81,9 +190,15 @@ class ProjectIndex {
   updateFile(filePath, source) {
     if (filePath.endsWith(".html")) {
       this.templateIndexer.indexFile(filePath, source);
+      this._indexedFiles.add(filePath);
       this._registryEmitter.schedule();
     } else if (filePath.endsWith(".js") || filePath.endsWith(".jsx")) {
+      // Ensure checker enrichment for live edits
+      if (this.typeService && !this.typeService.isReady) {
+        this.typeService.ensureReady();
+      }
       this.componentIndexer.indexFile(filePath, source);
+      this._indexedFiles.add(filePath);
       this._registryEmitter.schedule();
     }
   }
@@ -105,8 +220,8 @@ class ProjectIndex {
   }
 
   /**
-   * Flush the template registry `.d.ts` immediately.
-   * @returns {{ path: string, written: boolean }}
+   * Flush template/helpers registries + index cache immediately.
+   * @returns {ReturnType<typeof createDebouncedEmitter> extends { flush: () => infer R } ? R : never}
    */
   emitTemplateRegistry() {
     return this._registryEmitter.flush();
@@ -135,6 +250,10 @@ class ProjectIndex {
    * @returns {boolean} true if anything was refreshed
    */
   refreshStaleComponents() {
+    if (this.typeService && !this.typeService.isReady) {
+      // Nothing checker-backed yet; skip until background scan finishes
+      return false;
+    }
     const changed = this.componentIndexer.refreshStaleFiles();
     if (changed) this._registryEmitter.schedule();
     return changed;
@@ -276,10 +395,21 @@ class ProjectIndex {
   }
 
   /**
-   * Recursively scan a directory for HTML and JS files.
+   * Recursively scan a directory for HTML and JS files into this index.
    * @param {string} dirPath
    */
   _scanDirectory(dirPath) {
+    this._scanDirectoryInto(dirPath, this.templateIndexer, this.componentIndexer, this._indexedFiles);
+  }
+
+  /**
+   * Recursively scan into explicit indexers (used by sync scan()).
+   * @param {string} dirPath
+   * @param {TemplateIndexer} templates
+   * @param {ComponentIndexer} components
+   * @param {Set<string>} indexedFiles
+   */
+  _scanDirectoryInto(dirPath, templates, components, indexedFiles) {
     let entries;
     try {
       entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -296,14 +426,77 @@ class ProjectIndex {
       const isFile = entry.isFile() || (entry.isSymbolicLink() && isFileSync(fullPath));
 
       if (isDir) {
-        this._scanDirectory(fullPath);
+        this._scanDirectoryInto(fullPath, templates, components, indexedFiles);
       } else if (isFile) {
         if (entry.name.endsWith(".html")) {
-          this.templateIndexer.indexFile(fullPath);
-          this._indexedFiles.add(fullPath);
+          templates.indexFile(fullPath);
+          indexedFiles.add(fullPath);
         } else if (entry.name.endsWith(".js") || entry.name.endsWith(".jsx")) {
-          this.componentIndexer.indexFile(fullPath);
-          this._indexedFiles.add(fullPath);
+          components.indexFile(fullPath);
+          indexedFiles.add(fullPath);
+        }
+      }
+    }
+  }
+
+  /**
+   * Chunked async scan — yields every few files so LSP requests can run.
+   * @param {string} dirPath
+   * @param {TemplateIndexer} templates
+   * @param {ComponentIndexer} components
+   * @param {Set<string>} indexedFiles
+   * @returns {Promise<void>}
+   */
+  async _scanDirectoryIntoChunked(dirPath, templates, components, indexedFiles) {
+    /** @type {string[]} */
+    const files = [];
+    this._collectSourceFiles(dirPath, files);
+
+    let n = 0;
+    for (const fullPath of files) {
+      if (fullPath.endsWith(".html")) {
+        templates.indexFile(fullPath);
+      } else {
+        components.indexFile(fullPath);
+      }
+      indexedFiles.add(fullPath);
+      n++;
+      if (n % 20 === 0) {
+        await this._yield();
+      }
+    }
+  }
+
+  /**
+   * Collect .html/.js/.jsx paths under dirPath.
+   * @param {string} dirPath
+   * @param {string[]} out
+   */
+  _collectSourceFiles(dirPath, out) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (IGNORE_DIRS.has(entry.name)) continue;
+
+      const fullPath = path.join(dirPath, entry.name);
+      const isDir = entry.isDirectory() || (entry.isSymbolicLink() && isDirectorySync(fullPath));
+      const isFile = entry.isFile() || (entry.isSymbolicLink() && isFileSync(fullPath));
+
+      if (isDir) {
+        this._collectSourceFiles(fullPath, out);
+      } else if (isFile) {
+        if (
+          entry.name.endsWith(".html") ||
+          entry.name.endsWith(".js") ||
+          entry.name.endsWith(".jsx")
+        ) {
+          out.push(fullPath);
         }
       }
     }

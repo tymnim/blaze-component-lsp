@@ -53,13 +53,14 @@ class ComponentIndexer {
     }
 
     if (this.typeService) {
+      // Overlays are cheap; avoid forcing LanguageService creation until needed
       this.typeService.updateFile(filePath, source);
     }
 
     this.removeFile(filePath);
 
     const components = parseComponent(source, filePath);
-    if (this.typeService) {
+    if (this.typeService && this.typeService.isReady) {
       resolveComponentTypes(components, this.typeService, filePath);
     }
     for (const comp of components) {
@@ -68,7 +69,7 @@ class ComponentIndexer {
     this.fileComponents.set(filePath, components);
 
     const globals = findGlobalHelpers(source, filePath);
-    if (this.typeService) {
+    if (this.typeService && this.typeService.isReady) {
       resolveGlobalHelperTypes(globals, this.typeService, filePath);
     }
     for (const g of globals) {
@@ -94,6 +95,78 @@ class ComponentIndexer {
       } catch {}
     }
     return changed;
+  }
+
+  /**
+   * Restore components + global helpers from index-cache.json.
+   * @param {object[]} cachedComponents
+   * @param {object[]} cachedGlobals
+   */
+  hydrateFromCache(cachedComponents, cachedGlobals) {
+    this.components.clear();
+    this.fileComponents.clear();
+    this.globalHelpers.clear();
+    this._fileGlobalHelpers.clear();
+    this._mtimes.clear();
+
+    /** @type {Map<string, ComponentInfo[]>} */
+    const byFile = new Map();
+
+    if (Array.isArray(cachedComponents)) {
+      for (const entry of cachedComponents) {
+        if (!entry || !entry.templateName) continue;
+        /** @type {ComponentInfo} */
+        const comp = {
+          className: entry.className || "",
+          filePath: entry.filePath || "",
+          templateName: entry.templateName,
+          helpers: Array.isArray(entry.helpers) ? entry.helpers : [],
+          events: Array.isArray(entry.events) ? entry.events : [],
+          contextDataFields: Array.isArray(entry.contextDataFields) ? entry.contextDataFields : [],
+          parentClass: entry.parentClass ?? null,
+          htmlImportPath: entry.htmlImportPath ?? null,
+          classRange: entry.classRange || { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }
+        };
+        this.components.set(comp.templateName, comp);
+        if (comp.filePath) {
+          const list = byFile.get(comp.filePath) || [];
+          list.push(comp);
+          byFile.set(comp.filePath, list);
+          this._mtimes.set(comp.filePath, 0);
+        }
+      }
+    }
+
+    for (const [fp, list] of byFile) {
+      this.fileComponents.set(fp, list);
+    }
+
+    /** @type {Map<string, GlobalHelperInfo[]>} */
+    const globalsByFile = new Map();
+    if (Array.isArray(cachedGlobals)) {
+      for (const entry of cachedGlobals) {
+        if (!entry || !entry.name) continue;
+        /** @type {GlobalHelperInfo} */
+        const g = {
+          name: entry.name,
+          filePath: entry.filePath || "",
+          range: entry.range || { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } },
+          returnType: entry.returnType,
+          documentation: entry.documentation,
+          params: entry.params
+        };
+        this.globalHelpers.set(g.name, g);
+        if (g.filePath) {
+          const list = globalsByFile.get(g.filePath) || [];
+          list.push(g);
+          globalsByFile.set(g.filePath, list);
+          if (!this._mtimes.has(g.filePath)) this._mtimes.set(g.filePath, 0);
+        }
+      }
+    }
+    for (const [fp, list] of globalsByFile) {
+      this._fileGlobalHelpers.set(fp, list);
+    }
   }
 
   /**
@@ -141,6 +214,38 @@ class ComponentIndexer {
    */
   getComponentsInFile(filePath) {
     return this.fileComponents.get(filePath) || [];
+  }
+
+  /**
+   * Enrich already-parsed components/globals with TypeService checker types.
+   * Yields to the event loop every `batchSize` files so the LSP stays responsive.
+   * @param {() => Promise<void>} yieldFn
+   * @param {number} [batchSize]
+   */
+  async enrichTypesChunked(yieldFn, batchSize = 8) {
+    if (!this.typeService) return;
+    this.typeService.ensureReady();
+
+    const files = new Set([
+      ...this.fileComponents.keys(),
+      ...this._fileGlobalHelpers.keys()
+    ]);
+
+    let n = 0;
+    for (const filePath of files) {
+      const comps = this.fileComponents.get(filePath);
+      if (comps && comps.length) {
+        resolveComponentTypes(comps, this.typeService, filePath);
+      }
+      const globals = this._fileGlobalHelpers.get(filePath);
+      if (globals && globals.length) {
+        resolveGlobalHelperTypes(globals, this.typeService, filePath);
+      }
+      n++;
+      if (n % batchSize === 0 && yieldFn) {
+        await yieldFn();
+      }
+    }
   }
 
   /**

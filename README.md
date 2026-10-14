@@ -312,15 +312,19 @@ Example:
 
 Without usable path mappings, ContextData/helper types fall back to JSDoc string parsing. Assignability checks still use the TypeScript checker when type strings can be parsed.
 
-### Generated template registry
+### Generated registry + startup cache
 
-On scan/update the LSP writes `.blaze-component-lsp/templates.d.ts` with:
+On scan/update the LSP writes under `.blaze-component-lsp/`:
 
-- `Template` — union of known template name literals
-- `ContextDataFrom<T>` — ContextData for template `T`
-- `TemplateEntry<TExtras>` — optional correlated `{ template, data }` helper
+| File | Purpose |
+|------|---------|
+| `templates.d.ts` | `Template`, `ContextDataFrom<T>`, `TemplateEntry` |
+| `helpers.d.ts` | `GlobalHelpers`, `TemplateHelpersMap`, `HelpersOf<T>` |
+| `index-cache.json` | Fast LSP cold-start snapshot (signatures, docs, file ranges) |
 
-Add `.blaze-component-lsp/` to `.gitignore`. Map it in `tsconfig` as shown above so JSDoc `import("blaze-component-lsp").Template` resolves in the editor.
+**Startup:** the first open of an app hydrates from `index-cache.json` (if present) so completions/hover work immediately, then re-indexes in the background and rewrites the cache. The first open after a clone builds the cache in the background.
+
+Add `.blaze-component-lsp/` to `.gitignore`. Map `blaze-component-lsp` → `templates.d.ts` in `tsconfig` as shown above (`templates.d.ts` references `helpers.d.ts`).
 
 User-defined shapes (preferred over any fixed “Tab” type):
 
@@ -362,9 +366,11 @@ blaze-component-lsp/
 │   │   ├── templateIndexer.js   # HTML template index
 │   │   └── componentIndexer.js  # JS component index
 │   ├── typescript/
-│   │   ├── typeService.js              # TS LanguageService per .meteor root
+│   │   ├── typeService.js              # Lazy TS LanguageService per .meteor root
 │   │   ├── resolveComponentTypes.js    # ContextData / helper type resolution
-│   │   ├── templateRegistryEmitter.js  # Generated Template / ContextDataFrom .d.ts
+│   │   ├── templateRegistryEmitter.js  # templates.d.ts + debounced multi-emit
+│   │   ├── helpersRegistryEmitter.js   # helpers.d.ts (GlobalHelpers / TemplateHelpersMap)
+│   │   ├── indexCache.js               # index-cache.json serialize / hydrate
 │   │   └── spacebarsTypeScope.js       # each-in scopes + Template.dynamic typing
 │   ├── providers/
 │   │   ├── completionProvider.js

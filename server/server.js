@@ -78,9 +78,22 @@ function createServer(connection) {
     let index = projectIndexes.get(meteorRoot);
     if (!index) {
       index = new ProjectIndex(meteorRoot);
-      index.scan();
+      const { hydrated } = index.boot({
+        onScanComplete: ({ generation }) => {
+          connection.console.log(
+            `[blaze-component-lsp] Background scan complete for ${meteorRoot}: ` +
+            `${index.templateIndexer.size} templates, ${index.componentIndexer.size} components, ` +
+            `${index.componentIndexer.globalHelpers.size} global helpers (generation ${generation})`
+          );
+          scheduleHtmlDiagnosticsForIndex(index);
+        }
+      });
       projectIndexes.set(meteorRoot, index);
-      connection.console.log(`[blaze-component-lsp] Indexed app at ${meteorRoot}: ${index.templateIndexer.size} templates, ${index.componentIndexer.size} components (TypeService enabled)`);
+      connection.console.log(
+        hydrated
+          ? `[blaze-component-lsp] Hydrated ${meteorRoot} from cache (${index.templateIndexer.size} templates, ${index.componentIndexer.size} components); scanning in background…`
+          : `[blaze-component-lsp] Cold start for ${meteorRoot}; scanning in background…`
+      );
     }
     return index;
   }
@@ -195,6 +208,7 @@ function createServer(connection) {
       const filePath = uriToPath(doc.uri);
       const index = getIndexForFile(filePath);
       if (!index || refreshedIndexes.has(index)) continue;
+      if (index.scanning) continue;
       refreshedIndexes.add(index);
       if (index.refreshStaleComponents()) {
         connection.console.log(`[poll] Detected stale JS files, refreshing diagnostics`);
@@ -333,6 +347,11 @@ function createServer(connection) {
       const filePath = uriToPath(document.uri);
       const index = getIndexForFile(filePath);
       if (!index) return;
+      // Avoid forcing TypeService during cold boot / background scan — that was
+      // freezing Neovim on first HTML open. Diagnostics run again onScanComplete.
+      if (index.scanning || (index.typeService && !index.typeService.isReady)) {
+        return;
+      }
       forceRefreshIndex(filePath, index);
       const source = document.getText();
       const config = getConfigForFile(filePath);

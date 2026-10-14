@@ -37,9 +37,29 @@ class TypeService {
     this._syntheticPath = path.join(rootPath, "__blaze_component_lsp_types__.ts");
     /** @type {number} */
     this._syntheticVersion = 0;
+    /** @type {boolean} */
+    this._ready = false;
+    /** @type {string} */
+    this._syntheticContent = "export {};\n";
+  }
 
+  /**
+   * Lazily load tsconfig + create the LanguageService (expensive).
+   * Safe to call repeatedly.
+   */
+  ensureReady() {
+    if (this._ready) return;
     this._loadConfig();
     this._createLanguageService();
+    this._ready = true;
+  }
+
+  /**
+   * Whether the LanguageService has been created.
+   * @returns {boolean}
+   */
+  get isReady() {
+    return this._ready;
   }
 
   /**
@@ -183,8 +203,6 @@ class TypeService {
     };
 
     this._languageService = ts.createLanguageService(host, ts.createDocumentRegistry());
-    /** @type {string} */
-    this._syntheticContent = "export {};\n";
   }
 
   /**
@@ -196,8 +214,13 @@ class TypeService {
     const existing = this._overlays.get(filePath);
     const version = existing ? existing.version + 1 : 1;
     this._overlays.set(filePath, { version, content });
-    if (!this._rootFileNames.includes(filePath)) {
+    if (this._ready && !this._rootFileNames.includes(filePath)) {
       this._rootFileNames.push(filePath);
+    } else if (!this._ready) {
+      // Queue path so ensureReady()'s root list can pick it up via overlays
+      if (!this._rootFileNames.includes(filePath)) {
+        this._rootFileNames.push(filePath);
+      }
     }
   }
 
@@ -225,6 +248,7 @@ class TypeService {
    * @returns {ts.Program|undefined}
    */
   getProgram() {
+    this.ensureReady();
     return this._languageService ? this._languageService.getProgram() : undefined;
   }
 
@@ -232,6 +256,7 @@ class TypeService {
    * @returns {ts.TypeChecker|undefined}
    */
   getChecker() {
+    this.ensureReady();
     const program = this.getProgram();
     return program ? program.getTypeChecker() : undefined;
   }
@@ -276,6 +301,12 @@ class TypeService {
     if (!actualStr || !expectedStr) return true;
     if (actualStr === expectedStr) return true;
     if (expectedStr === "any" || expectedStr === "unknown") return true;
+
+    // Do not force LanguageService creation during cold boot / background scan.
+    // Callers that need the checker should call ensureReady() explicitly first.
+    if (!this._ready) {
+      return fallbackStringMatch(actualStr, expectedStr);
+    }
 
     const checker = this.getChecker();
     if (!checker) {
@@ -334,6 +365,7 @@ class TypeService {
    * @returns {ts.SourceFile|undefined}
    */
   getSourceFile(filePath) {
+    this.ensureReady();
     const program = this.getProgram();
     if (!program) return undefined;
     return program.getSourceFile(filePath);

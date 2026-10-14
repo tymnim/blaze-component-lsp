@@ -40,6 +40,46 @@ class TemplateIndexer {
   }
 
   /**
+   * Restore templates from index-cache.json (no HTML re-parse).
+   * Expressions are empty until a background scan / file open re-parses.
+   * @param {object[]} cached
+   */
+  hydrateFromCache(cached) {
+    this.templates.clear();
+    this.fileTemplates.clear();
+    if (!Array.isArray(cached)) return;
+
+    /** @type {Map<string, TemplateBlock[]>} */
+    const byFile = new Map();
+
+    for (const entry of cached) {
+      if (!entry || !entry.name) continue;
+      /** @type {TemplateBlock} */
+      const tpl = {
+        name: entry.name,
+        range: entry.range || { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } },
+        content: "",
+        contentStartLine: 0,
+        contentStartColumn: 0,
+        expressions: [],
+        includedTemplates: Array.isArray(entry.includedTemplates) ? entry.includedTemplates : [],
+        isBlockTemplate: !!entry.isBlockTemplate,
+        filePath: entry.filePath || ""
+      };
+      this.templates.set(tpl.name, tpl);
+      if (tpl.filePath) {
+        const list = byFile.get(tpl.filePath) || [];
+        list.push(tpl);
+        byFile.set(tpl.filePath, list);
+      }
+    }
+
+    for (const [fp, list] of byFile) {
+      this.fileTemplates.set(fp, list);
+    }
+  }
+
+  /**
    * Remove all templates from a file.
    * @param {string} filePath
    */
