@@ -151,6 +151,97 @@ describe("TypeService — diagnostics assignability", () => {
     const mismatch = diags.find(d => d.message.includes("not assignable"));
     assert.equal(mismatch, undefined, mismatch && mismatch.message);
   });
+
+  it("should flag positional multi-field ContextData mismatch", () => {
+    const index = new ProjectIndex(typedRoot);
+    index.scan();
+    // isChecked returns string; template1 expects { prop1: number }
+    const html = `
+<template name="toggleButton">
+  {{> template1 isChecked}}
+</template>
+`;
+    const diags = getDiagnostics(
+      index,
+      path.join(typedRoot, "imports/ui/components/toggle/toggle.html"),
+      html,
+      { errorOnTypeMismatch: true }
+    );
+    const mismatch = diags.find(d => d.message.includes("not assignable"));
+    assert.ok(
+      mismatch,
+      `expected mismatch for {{> template1 isChecked}}, got: ${diags.map(d => d.message).join("; ")}`
+    );
+  });
+
+  it("should accept positional helper matching multi-field ContextData", () => {
+    const index = new ProjectIndex(typedRoot);
+    index.scan();
+
+    const togglePath = path.join(typedRoot, "imports/ui/components/toggle/toggle.js");
+    index.updateFile(
+      togglePath,
+      `import { Template } from "meteor/templating";
+import { BlazeComponent, Component } from "meteor/znewsham:blaze-component";
+import "./toggle.html";
+
+/**
+ * @typedef {Object} ContextData
+ * @prop {string} text
+ * @prop {boolean} checked
+ * @prop {boolean} [isDisabled]
+ */
+
+/** @extends BlazeComponent<ContextData> */
+@Component(Template.toggleButton)
+export class toggleButton extends BlazeComponent {
+  static HelperMap() {
+    return ["isChecked", "label", "template1Data"];
+  }
+
+  /** @returns {string} */
+  isChecked() {
+    return "checked";
+  }
+
+  /**
+   * @param {number} n
+   * @returns {string}
+   */
+  label(n) {
+    return \`\${n}\`;
+  }
+
+  /**
+   * @returns {{ prop1: number }}
+   */
+  template1Data() {
+    return { prop1: 1 };
+  }
+}
+
+BlazeComponent.register(Template.toggleButton, toggleButton);
+`
+    );
+
+    const html = `
+<template name="toggleButton">
+  {{> template1 template1Data}}
+</template>
+`;
+    const diags = getDiagnostics(
+      index,
+      path.join(typedRoot, "imports/ui/components/toggle/toggle.html"),
+      html,
+      { errorOnTypeMismatch: true }
+    );
+    const mismatch = diags.find(d => d.message.includes("not assignable"));
+    assert.equal(
+      mismatch,
+      undefined,
+      mismatch && mismatch.message
+    );
+  });
 });
 
 describe("TypeService — fallback without strong types", () => {

@@ -33,7 +33,12 @@ function getCompletions(index, filePath, source, line, column) {
       if (isAfterEquals(textBeforeCursor)) {
         return getHelperAndDataCompletions(index, template.name);
       }
-      return getPartialHashCompletions(index, textBeforeCursor);
+      // Hash keys from the target template's ContextData, plus positional
+      // helpers/fields from the *current* template (e.g. {{> cardsContainer recruits}}).
+      return [
+        ...getPartialHashCompletions(index, textBeforeCursor),
+        ...getHelperAndDataCompletions(index, template.name, { includeBuiltins: false })
+      ];
     }
     return getTemplateNameCompletions(index);
   }
@@ -278,9 +283,11 @@ function getPartialHashCompletions(index, textBefore) {
  * Get helper and context data field completions for `{{...}}`.
  * @param {ProjectIndex} index
  * @param {string} templateName
+ * @param {{ includeBuiltins?: boolean }} [options]
  * @returns {import("vscode-languageserver").CompletionItem[]}
  */
-function getHelperAndDataCompletions(index, templateName) {
+function getHelperAndDataCompletions(index, templateName, options = {}) {
+  const includeBuiltins = options.includeBuiltins !== false;
   const { helpers, contextFields } = index.getAvailableIdentifiers(templateName);
 
   /** @type {import("vscode-languageserver").CompletionItem[]} */
@@ -325,14 +332,15 @@ function getHelperAndDataCompletions(index, templateName) {
     });
   }
 
-  // Add built-in block helpers
-  for (const builtin of ["if", "unless", "each", "with", "let"]) {
-    items.push({
-      label: builtin,
-      kind: CompletionItemKind.Keyword,
-      detail: "Block helper",
-      data: { type: "builtin", name: builtin }
-    });
+  if (includeBuiltins) {
+    for (const builtin of ["if", "unless", "each", "with", "let"]) {
+      items.push({
+        label: builtin,
+        kind: CompletionItemKind.Keyword,
+        detail: "Block helper",
+        data: { type: "builtin", name: builtin }
+      });
+    }
   }
 
   return items;

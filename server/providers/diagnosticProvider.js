@@ -379,6 +379,7 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
   const hasTypeDef = fields.length > 0;
   const isSingleDataField = hasTypeDef && fields.length === 1 && fields[0].name === "data";
 
+  // Positional `{{> tpl expr}}` — expr is the entire ContextData (object or primitive).
   if (expr.params && expr.params.length > 0) {
     if (!hasTypeDef) {
       for (const param of expr.params) {
@@ -391,8 +392,8 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
       }
       return;
     }
-    if (isSingleDataField) {
-      const expectedType = fields[0].type;
+    const expectedType = contextDataTypeForTemplate(index, partialName);
+    if (expectedType) {
       const param = expr.params[0];
       const actualType = LITERAL_TYPE_MAP[param.type];
       if (actualType && !typesAssignable(index, actualType, expectedType)) {
@@ -405,8 +406,8 @@ function checkPartialArgs(index, partialName, expr, diagnostics, source, typeSev
       } else if (param.type === "PathExpression") {
         checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `template "${partialName}"`, scopes);
       }
-      return;
     }
+    return;
   }
 
   if (isSingleDataField) return;
@@ -551,21 +552,25 @@ function checkBlockTemplateArgs(index, expr, diagnostics, source, typeSeverity, 
 
   const isSingleDataField = fields.length === 1 && fields[0].name === "data";
 
-  if (isSingleDataField && expr.params.length > 0) {
-    const expectedType = fields[0].type;
-    const param = expr.params[0];
-    const actualType = LITERAL_TYPE_MAP[param.type];
-    if (actualType && !typesAssignable(index, actualType, expectedType)) {
-      const range = findParamValueRange(source, expr, param.value);
-      diagnostics.push({
-        range,
-        severity: typeSeverity,
-        source: "blaze-component-lsp",
-        message: `Type "${actualType}" is not assignable to type "${expectedType}"`
-      });
-    } else if (param.type === "PathExpression") {
-      checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `block template "${expr.path}"`, scopes);
+  // Positional `{{#tpl expr}}` — expr is the entire ContextData.
+  if (expr.params && expr.params.length > 0) {
+    const expectedType = contextDataTypeForTemplate(index, expr.path);
+    if (expectedType) {
+      const param = expr.params[0];
+      const actualType = LITERAL_TYPE_MAP[param.type];
+      if (actualType && !typesAssignable(index, actualType, expectedType)) {
+        const range = findParamValueRange(source, expr, param.value);
+        diagnostics.push({
+          range,
+          severity: typeSeverity,
+          source: "blaze-component-lsp",
+          message: `Type "${actualType}" is not assignable to type "${expectedType}"`
+        });
+      } else if (param.type === "PathExpression") {
+        checkPathExpressionValue(param, diagnostics, sourceTemplateName, helperNames, contextFieldNames, index, expectedType, typeSeverity, `block template "${expr.path}"`, scopes);
+      }
     }
+    return;
   }
 
   if (!isSingleDataField && expr.hash && Object.keys(expr.hash).length > 0) {

@@ -117,6 +117,35 @@ describe("getCompletions", () => {
     assert.ok(labels.includes("text"), "should suggest text field");
   });
 
+  it("should suggest current template helpers and fields as positional partial args", () => {
+    // {{> cardsContainer recruits}} — suggest helpers/fields from *this* template
+    const source = '<template name="toggleButton">\n  {{> noteColorPicker i\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    const completions = getCompletions(index, "/test/toggle.html", source, 1, 24);
+    const labels = completions.map(c => c.label);
+    assert.ok(labels.includes("isChecked"), "should suggest current helper isChecked");
+    assert.ok(labels.includes("text"), "should suggest current context field text");
+    assert.ok(labels.includes("html"), "should suggest current context field html");
+    assert.ok(!labels.includes("if"), "should not suggest block builtins as positional args");
+
+    const helperItem = completions.find(c => c.label === "isChecked");
+    assert.ok(helperItem);
+    assert.equal(helperItem.kind, 3); // Function — not a hash key insert
+    assert.ok(!helperItem.insertText || !String(helperItem.insertText).endsWith("="));
+  });
+
+  it("should still suggest target ContextData keys alongside current identifiers", () => {
+    const source = '<template name="noteColorPicker">\n  {{> toggleButton \n</template>';
+    index.updateFile("/test/colorPicker.html", source);
+
+    const completions = getCompletions(index, "/test/colorPicker.html", source, 1, 20);
+    const hashKey = completions.find(c => c.insertText === "checked=");
+    assert.ok(hashKey, "should still offer target ContextData keys with =");
+    assert.ok(completions.some(c => c.label === "colors"), "should also offer current helpers");
+    assert.ok(completions.some(c => c.label === "currentColorCSS"), "should also offer current helpers");
+  });
+
   it("should return empty for positions outside expressions", () => {
     const source = '<template name="toggleButton">\n  <div>hello</div>\n</template>';
     const completions = getCompletions(index, "/test/toggle.html", source, 1, 8);
