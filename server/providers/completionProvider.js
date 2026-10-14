@@ -1,6 +1,11 @@
 // @ts-check
 const { CompletionItemKind } = require("vscode-languageserver");
 const { parseHTML, getContextAtPosition, flattenExpressions } = require("../parsers/spacebarsParser");
+const {
+  getEachScopesAtPosition,
+  hasEachIndex,
+  EACH_INDEX
+} = require("../typescript/spacebarsTypeScope");
 
 /**
  * @typedef {import("../indexer/projectIndex").ProjectIndex} ProjectIndex
@@ -27,17 +32,18 @@ function getCompletions(index, filePath, source, line, column) {
   const textBeforeCursorOnLine = lineText.slice(0, column);
 
   const textBeforeCursor = getTextBeforeCursorInExpression(lines, line, column);
+  const eachScopes = getEachScopesAtPosition(template.expressions, line, column);
 
   if (isInsidePartialTag(textBeforeCursor)) {
     if (isAfterPartialName(textBeforeCursor)) {
       if (isAfterEquals(textBeforeCursor)) {
-        return getHelperAndDataCompletions(index, template.name);
+        return getHelperAndDataCompletions(index, template.name, { eachScopes });
       }
       // Hash keys from the target template's ContextData, plus positional
       // helpers/fields from the *current* template (e.g. {{> cardsContainer recruits}}).
       return [
         ...getPartialHashCompletions(index, textBeforeCursor),
-        ...getHelperAndDataCompletions(index, template.name, { includeBuiltins: false })
+        ...getHelperAndDataCompletions(index, template.name, { includeBuiltins: false, eachScopes })
       ];
     }
     return getTemplateNameCompletions(index);
@@ -57,7 +63,7 @@ function getCompletions(index, filePath, source, line, column) {
   }
 
   if (isInsideMustache(textBeforeCursor)) {
-    return getHelperAndDataCompletions(index, template.name);
+    return getHelperAndDataCompletions(index, template.name, { eachScopes });
   }
 
   return [];
@@ -283,15 +289,47 @@ function getPartialHashCompletions(index, textBefore) {
  * Get helper and context data field completions for `{{...}}`.
  * @param {ProjectIndex} index
  * @param {string} templateName
- * @param {{ includeBuiltins?: boolean }} [options]
+ * @param {{ includeBuiltins?: boolean, eachScopes?: import("../typescript/spacebarsTypeScope").EachScope[] }} [options]
  * @returns {import("vscode-languageserver").CompletionItem[]}
  */
 function getHelperAndDataCompletions(index, templateName, options = {}) {
   const includeBuiltins = options.includeBuiltins !== false;
+  const eachScopes = options.eachScopes || [];
   const { helpers, contextFields } = index.getAvailableIdentifiers(templateName);
 
   /** @type {import("vscode-languageserver").CompletionItem[]} */
   const items = [];
+
+  if (hasEachIndex(eachScopes)) {
+    items.push({
+      label: EACH_INDEX,
+      kind: CompletionItemKind.Variable,
+      detail: "number",
+      documentation: {
+        kind: "markdown",
+        value: "0-based index of the current item in `{{#each}}`."
+      },
+      data: { type: "builtin", name: EACH_INDEX }
+    });
+
+    // Suggest each-in block params alongside helpers/fields
+    const seenParams = new Set();
+    for (let i = eachScopes.length - 1; i >= 0; i--) {
+      const param = eachScopes[i].param;
+      if (!param || seenParams.has(param)) continue;
+      seenParams.add(param);
+      items.push({
+        label: param,
+        kind: CompletionItemKind.Variable,
+        detail: `each item (${eachScopes[i].collection || "collection"})`,
+        documentation: {
+          kind: "markdown",
+          value: `Block parameter from \`{{#each ${param} in ${eachScopes[i].collection || "…"}}}\`.`
+        },
+        data: { type: "blockParam", name: param }
+      });
+    }
+  }
 
   for (const helper of helpers) {
     const paramSig = formatHelperParams(helper.params);

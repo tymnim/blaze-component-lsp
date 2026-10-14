@@ -152,6 +152,21 @@ describe("getDiagnostics", () => {
     assert.equal(typeDiag.severity, 1, "severity should be Error (1) when errorOnTypeMismatch is true");
   });
 
+  it("should accept @index inside #each and warn outside", () => {
+    const inside = '<template name="toggleButton">\n  {{#each item in text}}\n    {{@index}}\n  {{/each}}\n</template>';
+    index.updateFile("/test/toggle.html", inside);
+    const diagsInside = getDiagnostics(index, "/test/toggle.html", inside);
+    assert.ok(!diagsInside.some(d => d.message.includes("@index")), "should allow @index inside each");
+
+    const outside = '<template name="toggleButton">\n  {{@index}}\n</template>';
+    index.updateFile("/test/toggle.html", outside);
+    const diagsOutside = getDiagnostics(index, "/test/toggle.html", outside);
+    assert.ok(
+      diagsOutside.some(d => d.message.includes("@index") && d.message.includes("{{#each}}")),
+      `expected @index warning, got: ${diagsOutside.map(d => d.message).join("; ")}`
+    );
+  });
+
   it("should use Warning severity when errorOnTypeMismatch is false", () => {
     const noTypeJs = `
       import "./noType.html";

@@ -7,7 +7,9 @@ const {
   isCorrelatedTemplateDataPair,
   classifyTemplateNameType,
   extractTemplateLiteralName,
-  contextDataTypeForTemplate
+  contextDataTypeForTemplate,
+  hasEachIndex,
+  EACH_INDEX
 } = require("../typescript/spacebarsTypeScope");
 
 /**
@@ -111,10 +113,24 @@ function getDiagnostics(index, filePath, source, config) {
 
       if (expr.type === "MustacheExpression" || expr.type === "RawExpression") {
         const name = expr.path;
+        if (name === EACH_INDEX) {
+          if (!hasEachIndex(scopes)) {
+            diagnostics.push({
+              range: {
+                start: { line: expr.loc.start.line, character: expr.loc.start.column },
+                end: { line: expr.loc.end.line, character: expr.loc.end.column }
+              },
+              severity: DiagnosticSeverity.Warning,
+              source: "blaze-component-lsp",
+              message: `"${EACH_INDEX}" is only available inside {{#each}}`
+            });
+          }
+          return;
+        }
         if (name.includes(".")) {
           // Allow blockParam.prop — only warn if root is unknown and not a block param
           const root = name.split(".")[0];
-          const isBlockParam = scopes.some(s => s.param === root);
+          const isBlockParam = scopes.some(s => s.param && s.param === root);
           if (!isBlockParam && !helperNames.has(root) && !contextFieldNames.has(root) && !BUILTIN_HELPERS.has(root)) {
             diagnostics.push({
               range: {
@@ -129,7 +145,7 @@ function getDiagnostics(index, filePath, source, config) {
           return;
         }
         if (BUILTIN_HELPERS.has(name)) return;
-        if (scopes.some(s => s.param === name)) return;
+        if (scopes.some(s => s.param && s.param === name)) return;
 
         if (!helperNames.has(name) && !contextFieldNames.has(name)) {
           diagnostics.push({
@@ -189,9 +205,24 @@ function checkPathKnown(param, diagnostics, sourceTemplateName, helperNames, con
   const name = param.value;
   if (!name || BUILTIN_HELPERS.has(name)) return;
 
+  if (name === EACH_INDEX) {
+    if (!hasEachIndex(scopes)) {
+      diagnostics.push({
+        range: {
+          start: { line: param.loc.start.line, character: param.loc.start.column },
+          end: { line: param.loc.end.line, character: param.loc.end.column }
+        },
+        severity: DiagnosticSeverity.Warning,
+        source: "blaze-component-lsp",
+        message: `"${EACH_INDEX}" is only available inside {{#each}}`
+      });
+    }
+    return;
+  }
+
   if (name.includes(".")) {
     const root = name.split(".")[0];
-    if (scopes.some(s => s.param === root)) return;
+    if (scopes.some(s => s.param && s.param === root)) return;
     if (!helperNames.has(root) && !contextFieldNames.has(root)) {
       diagnostics.push({
         range: {
@@ -206,7 +237,7 @@ function checkPathKnown(param, diagnostics, sourceTemplateName, helperNames, con
     return;
   }
 
-  if (scopes.some(s => s.param === name)) return;
+  if (scopes.some(s => s.param && s.param === name)) return;
   if (!helperNames.has(name) && !contextFieldNames.has(name)) {
     diagnostics.push({
       range: {

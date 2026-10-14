@@ -1,5 +1,11 @@
 // @ts-check
 const { parseHTML, getContextAtPosition, flattenExpressions } = require("../parsers/spacebarsParser");
+const {
+  getEachScopesAtPosition,
+  hasEachIndex,
+  resolvePathType,
+  EACH_INDEX
+} = require("../typescript/spacebarsTypeScope");
 
 /**
  * @typedef {import("../indexer/projectIndex").ProjectIndex} ProjectIndex
@@ -44,7 +50,8 @@ function getHover(index, filePath, source, line, column) {
     }
   }
 
-  return getIdentifierHover(index, template.name, expression);
+  const eachScopes = getEachScopesAtPosition(template.expressions, line, column);
+  return getIdentifierHover(index, template.name, expression, eachScopes);
 }
 
 /**
@@ -99,8 +106,28 @@ function getPartialHover(index, expression) {
  * @param {import("../parsers/spacebarsParser").SpacebarsNode} expression
  * @returns {{ contents: string, range?: import("../parsers/spacebarsParser").SourceRange } | null}
  */
-function getIdentifierHover(index, templateName, expression) {
+function getIdentifierHover(index, templateName, expression, eachScopes = []) {
   const identifierName = expression.path;
+
+  if (identifierName === EACH_INDEX) {
+    if (!hasEachIndex(eachScopes)) return null;
+    return {
+      contents: `**\`${EACH_INDEX}\`** — \`number\`\n\n0-based index of the current item in \`{{#each}}\`.`,
+      range: expression.loc
+    };
+  }
+
+  // each-in block param
+  if (eachScopes.some(s => s.param && s.param === identifierName)) {
+    const type = resolvePathType(index, templateName, identifierName, eachScopes);
+    const scope = [...eachScopes].reverse().find(s => s.param === identifierName);
+    /** @type {string[]} */
+    const parts = [`**Block param: \`${identifierName}\`**`];
+    if (type) parts.push(`\nType: \`${type}\``);
+    if (scope) parts.push(`\nFrom \`{{#each ${identifierName} in ${scope.collection || "…"}}}\``);
+    return { contents: parts.join("\n"), range: expression.loc };
+  }
+
   const component = index.getComponentForTemplate(templateName);
 
   if (!component) return null;

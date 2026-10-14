@@ -8,12 +8,15 @@
  * @typedef {import("../parsers/spacebarsParser").SpacebarsParam} SpacebarsParam
  *
  * @typedef {Object} EachScope
- * @prop {string} param - Block param name (e.g. "tab")
+ * @prop {string|null} param - Block param name (e.g. "tab"), or null for `{{#each collection}}`
  * @prop {string} collection - Collection path (e.g. "tabs")
  */
 
+const EACH_INDEX = "@index";
+
 /**
- * Walk expressions depth-first, tracking each-in scopes.
+ * Walk expressions depth-first, tracking each scopes (`{{#each}}` / each-in).
+ * `@index` is available in the each body (not the `{{else}}` branch).
  * @param {SpacebarsNode[]} expressions
  * @param {(expr: SpacebarsNode, scopes: EachScope[]) => void} visit
  * @param {EachScope[]} [scopes]
@@ -22,20 +25,90 @@ function walkWithEachScopes(expressions, visit, scopes = []) {
   for (const expr of expressions) {
     visit(expr, scopes);
 
-    if (expr.type === "BlockExpression" && expr.path === "each" && expr.blockParams && expr.blockParams.length > 0) {
+    if (expr.type === "BlockExpression" && expr.path === "each") {
       const collection = expr.params && expr.params[0] ? expr.params[0].value : "";
-      const childScopes = [
-        ...scopes,
-        { param: expr.blockParams[0], collection }
-      ];
+      const param = expr.blockParams && expr.blockParams[0] ? expr.blockParams[0] : null;
+      const childScopes = [...scopes, { param, collection }];
       if (expr.children) walkWithEachScopes(expr.children, visit, childScopes);
-      // else branch of each typically has no item binding
+      // else branch: no block param / @index
       if (expr.inverse) walkWithEachScopes(expr.inverse, visit, scopes);
     } else {
       if (expr.children) walkWithEachScopes(expr.children, visit, scopes);
       if (expr.inverse) walkWithEachScopes(expr.inverse, visit, scopes);
     }
   }
+}
+
+/**
+ * Each scopes enclosing a cursor position (for completions / hover).
+ * @param {SpacebarsNode[]} expressions
+ * @param {number} line
+ * @param {number} column
+ * @param {EachScope[]} [scopes]
+ * @returns {EachScope[]}
+ */
+function getEachScopesAtPosition(expressions, line, column, scopes = []) {
+  const { isInsideRange } = require("../parsers/spacebarsParser");
+
+  for (const expr of expressions) {
+    if (!isInsideRange(expr.loc, line, column)) continue;
+    if (expr.type !== "BlockExpression") continue;
+
+    if (expr.path === "each") {
+      const collection = expr.params && expr.params[0] ? expr.params[0].value : "";
+      const param = expr.blockParams && expr.blockParams[0] ? expr.blockParams[0] : null;
+      const bodyScopes = [...scopes, { param, collection }];
+
+      if (isPositionInElse(expr, line, column)) {
+        return getEachScopesAtPosition(expr.inverse || [], line, column, scopes);
+      }
+      return getEachScopesAtPosition(expr.children || [], line, column, bodyScopes);
+    }
+
+    if (isPositionInElse(expr, line, column)) {
+      return getEachScopesAtPosition(expr.inverse || [], line, column, scopes);
+    }
+    return getEachScopesAtPosition(expr.children || [], line, column, scopes);
+  }
+
+  return scopes;
+}
+
+/**
+ * @param {SpacebarsNode} expr
+ * @param {number} line
+ * @param {number} column
+ * @returns {boolean}
+ */
+function isPositionInElse(expr, line, column) {
+  if (expr.elseStart) {
+    return comparePos(line, column, expr.elseStart) >= 0;
+  }
+  if (!expr.inverse || expr.inverse.length === 0) return false;
+  const { isInsideRange } = require("../parsers/spacebarsParser");
+  if (expr.inverse.some(c => isInsideRange(c.loc, line, column))) return true;
+  const firstInv = expr.inverse[0];
+  return comparePos(line, column, firstInv.loc.start) >= 0;
+}
+
+/**
+ * @param {number} line
+ * @param {number} column
+ * @param {{ line: number, column: number }} pos
+ * @returns {number}
+ */
+function comparePos(line, column, pos) {
+  if (line !== pos.line) return line - pos.line;
+  return column - pos.column;
+}
+
+/**
+ * True when `@index` is valid in the given each scopes.
+ * @param {EachScope[]} scopes
+ * @returns {boolean}
+ */
+function hasEachIndex(scopes) {
+  return Array.isArray(scopes) && scopes.length > 0;
 }
 
 /**
@@ -49,12 +122,17 @@ function walkWithEachScopes(expressions, visit, scopes = []) {
 function resolvePathType(index, sourceTemplateName, pathValue, scopes) {
   if (!pathValue) return undefined;
 
+  // {{#each}} special: @index → number
+  if (pathValue === EACH_INDEX) {
+    return hasEachIndex(scopes) ? "number" : undefined;
+  }
+
   // Dotted: blockParam.prop
   if (pathValue.includes(".")) {
     const parts = pathValue.split(".");
     if (parts.length !== 2) return undefined;
     const [root, prop] = parts;
-    const scope = [...scopes].reverse().find(s => s.param === root);
+    const scope = [...scopes].reverse().find(s => s.param && s.param === root);
     if (!scope) return undefined;
 
     const elementType = resolveCollectionElementType(index, sourceTemplateName, scope.collection, scopes.slice(0, scopes.indexOf(scope)));
@@ -63,8 +141,8 @@ function resolvePathType(index, sourceTemplateName, pathValue, scopes) {
     return resolvePropertyTypeFromObjectTypeString(elementType, prop);
   }
 
-  // Bare block param
-  const scope = [...scopes].reverse().find(s => s.param === pathValue);
+  // Bare block param (each-in)
+  const scope = [...scopes].reverse().find(s => s.param && s.param === pathValue);
   if (scope) {
     return resolveCollectionElementType(index, sourceTemplateName, scope.collection, scopes.slice(0, scopes.indexOf(scope)));
   }
@@ -208,7 +286,7 @@ function isCorrelatedTemplateDataPair(index, sourceTemplateName, templateParam, 
   if (tParts[1] !== "template" || dParts[1] !== "data") return false;
 
   const root = tParts[0];
-  const scope = [...scopes].reverse().find(s => s.param === root);
+  const scope = [...scopes].reverse().find(s => s.param && s.param === root);
   if (!scope) return false;
 
   const elementType = resolveCollectionElementType(
@@ -287,7 +365,10 @@ function contextDataTypeForTemplate(index, templateName) {
 }
 
 module.exports = {
+  EACH_INDEX,
   walkWithEachScopes,
+  getEachScopesAtPosition,
+  hasEachIndex,
   resolvePathType,
   resolveCollectionElementType,
   elementTypeFromArrayTypeString,

@@ -135,6 +135,40 @@ describe("getCompletions", () => {
     assert.ok(!helperItem.insertText || !String(helperItem.insertText).endsWith("="));
   });
 
+  it("should suggest @index inside #each but not outside", () => {
+    const source =
+      '<template name="toggleButton">\n' +
+      "  {{#each item in text}}\n" +
+      "    {{\n" +
+      "  {{/each}}\n" +
+      "  {{\n" +
+      "</template>";
+    index.updateFile("/test/toggle.html", source);
+
+    const inside = getCompletions(index, "/test/toggle.html", source, 2, 6);
+    const insideLabels = inside.map(c => c.label);
+    assert.ok(insideLabels.includes("@index"), "should suggest @index inside #each");
+    const indexItem = inside.find(c => c.label === "@index");
+    assert.equal(indexItem.detail, "number");
+    assert.ok(insideLabels.includes("item"), "should suggest each-in block param");
+
+    const outside = getCompletions(index, "/test/toggle.html", source, 4, 4);
+    assert.ok(!outside.map(c => c.label).includes("@index"), "should not suggest @index outside #each");
+  });
+
+  it("should suggest @index inside classic #each collection", () => {
+    const source =
+      '<template name="toggleButton">\n' +
+      "  {{#each text}}\n" +
+      "    {{\n" +
+      "  {{/each}}\n" +
+      "</template>";
+    index.updateFile("/test/toggle.html", source);
+
+    const completions = getCompletions(index, "/test/toggle.html", source, 2, 6);
+    assert.ok(completions.some(c => c.label === "@index"));
+  });
+
   it("should still suggest target ContextData keys alongside current identifiers", () => {
     const source = '<template name="noteColorPicker">\n  {{> toggleButton \n</template>';
     index.updateFile("/test/colorPicker.html", source);

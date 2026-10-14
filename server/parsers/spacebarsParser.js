@@ -20,6 +20,7 @@
  * @prop {SpacebarsNode[]} [children]
  * @prop {SpacebarsNode[]} [inverse]
  * @prop {string[]} [blockParams]
+ * @prop {Position} [elseStart] - Start of `{{else}}` when present
  *
  * @typedef {Object} TemplateBlock
  * @prop {string} name
@@ -180,15 +181,22 @@ function parseSpacebarsExpressions(content, baseLine, baseColumn) {
         }
         i = closeIdx + 2;
       } else {
-        // Check for {{else}}
+        // Check for {{else}} / regular mustache. Incomplete `{{` (no `}}` before
+        // another `{{`) must not swallow a later expression's closing braces —
+        // e.g. `{{` inside `#each` before `{{/each}}` while typing completions.
         const closeIdx = findClosingBraces(content, i + 2);
-        if (closeIdx === -1) { i++; continue; }
-        const inner = content.slice(i + 2, closeIdx).trim();
+        if (closeIdx === -1) { i += 2; continue; }
+        const rawInner = content.slice(i + 2, closeIdx);
+        if (rawInner.includes("{{")) { i += 2; continue; }
+        const inner = rawInner.trim();
 
         if (inner === "else") {
           if (blockStack.length > 0) {
             const top = blockStack[blockStack.length - 1];
             top._inInverse = true;
+            if (!top.node.elseStart) {
+              top.node.elseStart = offsetToPosition(content, exprStart, baseLine, baseColumn);
+            }
           }
           i = closeIdx + 2;
         } else {
