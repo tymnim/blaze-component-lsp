@@ -677,6 +677,7 @@ module.exports = {
   parseSpacebarsExpressions,
   tokenizeExpression,
   getContextAtPosition,
+  isInsideRange,
   findExpressionAtPosition,
   flattenExpressions,
   isInsideRange,

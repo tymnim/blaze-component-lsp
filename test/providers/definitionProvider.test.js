@@ -72,4 +72,55 @@ describe("getDefinition", () => {
     const result = getDefinition(index, "/test/toggle.html", source, 1, 6);
     assert.equal(result, null);
   });
+
+  it("should go to helper used as positional partial arg", () => {
+    const source = '<template name="toggleButton">\n  {{> noteColorPicker isChecked}}\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    // Cursor on isChecked
+    const result = getDefinition(index, "/test/toggle.html", source, 1, 26);
+    assert.ok(result, "expected definition");
+    assert.ok(result[0].uri.includes("toggle.js"), `got ${result[0].uri}`);
+  });
+
+  it("should go to helper used as hash value", () => {
+    const source = '<template name="toggleButton">\n  {{> noteColorPicker x=isChecked}}\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    const result = getDefinition(index, "/test/toggle.html", source, 1, 28);
+    assert.ok(result, "expected definition");
+    assert.ok(result[0].uri.includes("toggle.js"), `got ${result[0].uri}`);
+  });
+
+  it("should go to context field used as positional partial arg", () => {
+    const source = '<template name="toggleButton">\n  {{> noteColorPicker text}}\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    const result = getDefinition(index, "/test/toggle.html", source, 1, 24);
+    assert.ok(result, "expected definition");
+    assert.ok(result[0].uri.includes("toggle.js"), `got ${result[0].uri}`);
+  });
+
+  it("should go to target ContextData field for hash key", () => {
+    const source = '<template name="noteColorPicker">\n  {{> toggleButton checked=true}}\n</template>';
+    index.updateFile("/test/colorPicker.html", source);
+
+    // Cursor on "checked" key
+    const line = "  {{> toggleButton checked=true}}";
+    const col = line.indexOf("checked") + 2;
+    const result = getDefinition(index, "/test/colorPicker.html", source, 1, col);
+    assert.ok(result, "expected definition");
+    assert.ok(result[0].uri.includes("toggle.js"), `got ${result[0].uri}`);
+  });
+
+  it("should go to helper inside subexpression", () => {
+    const source = '<template name="toggleButton">\n  {{> noteColorPicker x=(isChecked)}}\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    const line = "  {{> noteColorPicker x=(isChecked)}}";
+    const col = line.indexOf("isChecked") + 2;
+    const result = getDefinition(index, "/test/toggle.html", source, 1, col);
+    assert.ok(result, "expected definition");
+    assert.ok(result[0].uri.includes("toggle.js"), `got ${result[0].uri}`);
+  });
 });
