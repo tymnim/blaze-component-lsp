@@ -413,10 +413,7 @@ npm run test:typescript      # TypeService / checker integration tests
 
 - Event selector validation. Eg if element exists in the current template. Finding unreachable code.
 - Unused helper removal.
-- Better go to defitions (go to definions on helpers and template context data properties).
 - Better hints (for example in vs code hover hints might be useful)
-- `Template.dynamic` template & data validation.
 - Stricter rules and definitions for meteor native functions: `{{#if}}`, `{{#unless}}`, etc.
 - Better `{{#each}}`/`{{#let}}` suggestions.
 - Support for the latest Blaze `@` helpers relating to promises.
-- Support for `@index` inside `{{#each}}`
