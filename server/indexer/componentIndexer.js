@@ -12,6 +12,18 @@ const {
  * @typedef {import("../typescript/typeService").TypeService} TypeService
  */
 
+/**
+ * @param {string} filePath
+ * @returns {number}
+ */
+function safeMtime(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return Date.now();
+  }
+}
+
 class ComponentIndexer {
   /**
    * @param {TypeService|null} [typeService]
@@ -132,7 +144,9 @@ class ComponentIndexer {
           const list = byFile.get(comp.filePath) || [];
           list.push(comp);
           byFile.set(comp.filePath, list);
-          this._mtimes.set(comp.filePath, 0);
+          // Use real mtime (not 0). A zero mtime makes every file look stale and
+          // forces a full re-enrich on refreshStaleFiles — very expensive on large apps.
+          this._mtimes.set(comp.filePath, safeMtime(comp.filePath));
         }
       }
     }
@@ -160,7 +174,9 @@ class ComponentIndexer {
           const list = globalsByFile.get(g.filePath) || [];
           list.push(g);
           globalsByFile.set(g.filePath, list);
-          if (!this._mtimes.has(g.filePath)) this._mtimes.set(g.filePath, 0);
+          if (!this._mtimes.has(g.filePath)) {
+            this._mtimes.set(g.filePath, safeMtime(g.filePath));
+          }
         }
       }
     }
@@ -217,6 +233,31 @@ class ComponentIndexer {
   }
 
   /**
+   * Enrich a single file; swallow TypeScript internal throws.
+   * @param {string} filePath
+   */
+  _enrichFile(filePath) {
+    if (!this.typeService) return;
+    try {
+      const comps = this.fileComponents.get(filePath);
+      if (comps && comps.length) {
+        resolveComponentTypes(comps, this.typeService, filePath);
+      }
+      const globals = this._fileGlobalHelpers.get(filePath);
+      if (globals && globals.length) {
+        resolveGlobalHelperTypes(globals, this.typeService, filePath);
+      }
+    } catch (err) {
+      // TypeScript can throw internally on some Meteor/JSDoc shapes (e.g. objectFlags).
+      // Skip the file so the rest of the project still enriches and registries emit.
+      console.error(
+        `[blaze-component-lsp] Type enrichment skipped for ${filePath}:`,
+        err && /** @type {Error} */ (err).message ? /** @type {Error} */ (err).message : err
+      );
+    }
+  }
+
+  /**
    * Enrich already-parsed components/globals with TypeService checker types.
    * Yields to the event loop every `batchSize` files so the LSP stays responsive.
    * @param {() => Promise<void>} yieldFn
@@ -233,18 +274,28 @@ class ComponentIndexer {
 
     let n = 0;
     for (const filePath of files) {
-      const comps = this.fileComponents.get(filePath);
-      if (comps && comps.length) {
-        resolveComponentTypes(comps, this.typeService, filePath);
-      }
-      const globals = this._fileGlobalHelpers.get(filePath);
-      if (globals && globals.length) {
-        resolveGlobalHelperTypes(globals, this.typeService, filePath);
-      }
+      this._enrichFile(filePath);
       n++;
       if (n % batchSize === 0 && yieldFn) {
         await yieldFn();
       }
+    }
+  }
+
+  /**
+   * Synchronous enrichment for CLI / tests (same work as enrichTypesChunked).
+   */
+  enrichTypesSync() {
+    if (!this.typeService) return;
+    this.typeService.ensureReady();
+
+    const files = new Set([
+      ...this.fileComponents.keys(),
+      ...this._fileGlobalHelpers.keys()
+    ]);
+
+    for (const filePath of files) {
+      this._enrichFile(filePath);
     }
   }
 

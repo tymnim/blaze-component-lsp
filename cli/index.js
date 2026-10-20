@@ -112,14 +112,20 @@ function main() {
   for (const root of allowedRoots) {
     const index = new ProjectIndex(root);
     if (isFileTraceEnabled()) {
-      traceFiles(`scan begin meteorRoot=${root}`);
+      traceFiles(`load begin meteorRoot=${root}`);
     }
     const t0 = Date.now();
-    index.scan();
+    // Prefer index-cache.json (same as LSP cold start); full scan only on miss.
+    const mode = index.loadForCli();
     if (isFileTraceEnabled()) {
       traceFiles(
-        `scan done meteorRoot=${root} templates=${index.templateIndexer.size} ` +
+        `load done mode=${mode} meteorRoot=${root} templates=${index.templateIndexer.size} ` +
         `components=${index.componentIndexer.size} elapsedMs=${Date.now() - t0}`
+      );
+    } else if (mode === "scan") {
+      console.error(
+        `[blaze-check] Indexed ${root} (${index.templateIndexer.size} templates, ` +
+        `${index.componentIndexer.size} components) in ${((Date.now() - t0) / 1000).toFixed(1)}s`
       );
     }
     indexes.set(root, index);

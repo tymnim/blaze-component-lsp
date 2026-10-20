@@ -101,10 +101,17 @@ class ProjectIndex {
   }
 
   /**
-   * Synchronous full scan (CLI / tests). Ensures TypeService is ready first.
+   * Synchronous full scan (CLI / tests).
+   *
+   * Parse HTML/JS first *without* creating the TypeScript LanguageService, then
+   * optionally enrich once. Checker enrichment dominates runtime on large apps
+   * (~minutes); tests keep it on by default, CLI uses `{ enrich: false }`.
+   *
+   * @param {{ enrich?: boolean }} [options]
    */
-  scan() {
-    this.typeService.ensureReady();
+  scan(options = {}) {
+    const enrich = options.enrich !== false;
+
     this._indexedFiles.clear();
     this.templateIndexer.templates.clear();
     this.templateIndexer.fileTemplates.clear();
@@ -114,12 +121,50 @@ class ProjectIndex {
     this.componentIndexer._fileGlobalHelpers.clear();
     this.componentIndexer._mtimes.clear();
 
+    // Phase 1: parse only (typeService.isReady === false → no per-file enrichment)
     this._scanDirectory(this.rootPath);
-    const result = this._registryEmitter.flush();
-    this._maybeWarnMissingRegistryPath(result.templates.path);
+    this._flushRegistries();
+
+    // Phase 2: LanguageService + enrichment (expensive)
+    if (enrich) {
+      try {
+        this.typeService.ensureReady();
+        this.componentIndexer.enrichTypesSync();
+        this._flushRegistries();
+      } catch (err) {
+        console.error(
+          `[blaze-component-lsp] Type enrichment failed for ${this.rootPath} (registries kept from parse):`,
+          err
+        );
+      }
+    }
+
     this.ready = true;
     this.scanning = false;
     this.generation += 1;
+  }
+
+  /**
+   * Fast path for CLI:
+   * - Prefer index-cache.json (JSDoc/helper types already stored)
+   * - On miss: parse-only scan (skip checker enrichment — that is the slow part)
+   * - Do not force TypeService.ensureReady(); assignability falls back to string
+   *   matching until/unless something else warms the checker
+   * @returns {"cache"|"scan"}
+   */
+  loadForCli() {
+    const cache = loadIndexCache(this.rootPath);
+    if (cache) {
+      hydrateFromCache(this, cache);
+      this.hydratedFromCache = true;
+      this.ready = true;
+      // Re-parse only files that changed; TypeService not ready → JSDoc parse only
+      this.refreshStaleComponents();
+      this.generation += 1;
+      return "cache";
+    }
+    this.scan({ enrich: false });
+    return "scan";
   }
 
   /**
@@ -154,10 +199,26 @@ class ProjectIndex {
     this.componentIndexer = nextComponents;
     this._indexedFiles = nextIndexed;
 
-    // Expensive: LanguageService over the project, then enrich in batches
-    this.typeService.ensureReady();
-    await this.componentIndexer.enrichTypesChunked(() => this._yield(), 8);
+    // Write registries from parse-only data so .blaze-component-lsp/ exists even if
+    // TypeService enrichment crashes (seen on larger apps via TS instantiateType).
+    this._flushRegistries();
 
+    try {
+      this.typeService.ensureReady();
+      await this.componentIndexer.enrichTypesChunked(() => this._yield(), 8);
+      this._flushRegistries();
+    } catch (err) {
+      console.error(
+        `[blaze-component-lsp] Type enrichment failed for ${this.rootPath} (registries kept from parse):`,
+        err
+      );
+    }
+  }
+
+  /**
+   * Emit templates.d.ts / helpers.d.ts / index-cache.json for this meteor root.
+   */
+  _flushRegistries() {
     const result = this._registryEmitter.flush();
     this._maybeWarnMissingRegistryPath(result.templates.path);
   }
