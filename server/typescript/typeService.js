@@ -3,6 +3,37 @@ const fs = require("node:fs");
 const path = require("node:path");
 const ts = require("typescript");
 
+/** @type {boolean} */
+let fileTraceEnabled =
+  process.env.BLAZE_COMPONENT_LSP_TRACE_FILES === "1" ||
+  process.env.BLAZE_COMPONENT_LSP_TRACE_FILES === "true";
+
+/**
+ * Enable/disable per-file open tracing (also set via BLAZE_COMPONENT_LSP_TRACE_FILES=1).
+ * @param {boolean} enabled
+ */
+function setFileTraceEnabled(enabled) {
+  fileTraceEnabled = !!enabled;
+}
+
+/**
+ * @returns {boolean}
+ */
+function isFileTraceEnabled() {
+  return fileTraceEnabled;
+}
+
+/**
+ * @param {string} message
+ */
+function traceFiles(message) {
+  if (!fileTraceEnabled) return;
+  const mem = process.memoryUsage();
+  const heapMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
+  const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
+  console.error(`[blaze-trace] heap=${heapMB}MB rss=${rssMB}MB ${message}`);
+}
+
 /**
  * Per-Meteor-root TypeScript LanguageService wrapper.
  * Resolves types via the real checker; supports file overlays for open buffers.
@@ -41,6 +72,10 @@ class TypeService {
     this._ready = false;
     /** @type {string} */
     this._syntheticContent = "export {};\n";
+    /** @type {Set<string>} */
+    this._tracedOpens = new Set();
+    /** @type {number} */
+    this._tracedOpenCount = 0;
   }
 
   /**
@@ -49,9 +84,50 @@ class TypeService {
    */
   ensureReady() {
     if (this._ready) return;
+    const t0 = Date.now();
     this._loadConfig();
+    if (fileTraceEnabled) {
+      const byTop = new Map();
+      for (const f of this._rootFileNames) {
+        const rel = path.relative(this.rootPath, f);
+        const top = rel.split(path.sep).slice(0, 2).join("/") || rel;
+        byTop.set(top, (byTop.get(top) || 0) + 1);
+      }
+      const summary = [...byTop.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ");
+      traceFiles(
+        `TypeService ensureReady root=${this.rootPath} rootFiles=${this._rootFileNames.length} top=[${summary}]`
+      );
+    }
     this._createLanguageService();
     this._ready = true;
+    // Force program construction so opens are visible during profiling
+    if (fileTraceEnabled) {
+      const program = this._languageService && this._languageService.getProgram();
+      const n = program ? program.getSourceFiles().length : 0;
+      traceFiles(
+        `TypeService ready programFiles=${n} opens=${this._tracedOpenCount} elapsedMs=${Date.now() - t0}`
+      );
+    }
+  }
+
+  /**
+   * Log the first time a path is loaded into the LanguageService.
+   * @param {string} fileName
+   * @param {number} [byteLength]
+   * @param {string} [via]
+   */
+  _traceOpen(fileName, byteLength, via) {
+    if (!fileTraceEnabled || this._tracedOpens.has(fileName)) return;
+    this._tracedOpens.add(fileName);
+    this._tracedOpenCount++;
+    const rel = path.relative(this.rootPath, fileName);
+    const display = rel && !rel.startsWith("..") ? rel : fileName;
+    const size = byteLength !== undefined ? ` bytes=${byteLength}` : "";
+    traceFiles(`open #${this._tracedOpenCount}${size} via=${via || "snapshot"} ${display}`);
   }
 
   /**
@@ -172,13 +248,17 @@ class TypeService {
       getScriptSnapshot: (fileName) => {
         const overlay = service._overlays.get(fileName);
         if (overlay) {
+          service._traceOpen(fileName, Buffer.byteLength(overlay.content, "utf8"), "overlay");
           return ts.ScriptSnapshot.fromString(overlay.content);
         }
         if (fileName === service._syntheticPath) {
-          return ts.ScriptSnapshot.fromString(service._syntheticContent || "export {};\n");
+          const content = service._syntheticContent || "export {};\n";
+          service._traceOpen(fileName, Buffer.byteLength(content, "utf8"), "synthetic");
+          return ts.ScriptSnapshot.fromString(content);
         }
         try {
           const content = fs.readFileSync(fileName, "utf-8");
+          service._traceOpen(fileName, Buffer.byteLength(content, "utf8"), "snapshot");
           return ts.ScriptSnapshot.fromString(content);
         } catch {
           return undefined;
@@ -192,9 +272,20 @@ class TypeService {
         ts.sys.fileExists(fileName),
       readFile: (fileName) => {
         const overlay = service._overlays.get(fileName);
-        if (overlay) return overlay.content;
-        if (fileName === service._syntheticPath) return service._syntheticContent || "export {};\n";
-        return ts.sys.readFile(fileName);
+        if (overlay) {
+          service._traceOpen(fileName, Buffer.byteLength(overlay.content, "utf8"), "readFile-overlay");
+          return overlay.content;
+        }
+        if (fileName === service._syntheticPath) {
+          const content = service._syntheticContent || "export {};\n";
+          service._traceOpen(fileName, Buffer.byteLength(content, "utf8"), "readFile-synthetic");
+          return content;
+        }
+        const content = ts.sys.readFile(fileName);
+        if (content !== undefined) {
+          service._traceOpen(fileName, Buffer.byteLength(content, "utf8"), "readFile");
+        }
+        return content;
       },
       readDirectory: ts.sys.readDirectory,
       directoryExists: ts.sys.directoryExists,
@@ -384,4 +475,10 @@ function fallbackStringMatch(actual, expected) {
   return parts.some(p => p.trim() === actual || p.trim() === "any" || p.trim() === "unknown");
 }
 
-module.exports = { TypeService, fallbackStringMatch };
+module.exports = {
+  TypeService,
+  fallbackStringMatch,
+  setFileTraceEnabled,
+  isFileTraceEnabled,
+  traceFiles
+};

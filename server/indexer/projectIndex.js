@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { TemplateIndexer } = require("./templateIndexer");
 const { ComponentIndexer } = require("./componentIndexer");
-const { TypeService } = require("../typescript/typeService");
+const { TypeService, isFileTraceEnabled, traceFiles } = require("../typescript/typeService");
 const { createDebouncedEmitter, getRegistryPath } = require("../typescript/templateRegistryEmitter");
 const { loadIndexCache, hydrateFromCache } = require("../typescript/indexCache");
 
@@ -429,9 +429,15 @@ class ProjectIndex {
         this._scanDirectoryInto(fullPath, templates, components, indexedFiles);
       } else if (isFile) {
         if (entry.name.endsWith(".html")) {
+          if (isFileTraceEnabled()) {
+            traceFiles(`index html ${path.relative(this.rootPath, fullPath)}`);
+          }
           templates.indexFile(fullPath);
           indexedFiles.add(fullPath);
         } else if (entry.name.endsWith(".js") || entry.name.endsWith(".jsx")) {
+          if (isFileTraceEnabled()) {
+            traceFiles(`index js ${path.relative(this.rootPath, fullPath)}`);
+          }
           components.indexFile(fullPath);
           indexedFiles.add(fullPath);
         }

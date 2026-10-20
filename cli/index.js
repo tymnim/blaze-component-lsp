@@ -5,6 +5,11 @@ const path = require("node:path");
 const { ProjectIndex } = require("../server/indexer/projectIndex");
 const { getDiagnostics } = require("../server/providers/diagnosticProvider");
 const { findMeteorRoot } = require("../server/utils/uri");
+const {
+  setFileTraceEnabled,
+  isFileTraceEnabled,
+  traceFiles
+} = require("../server/typescript/typeService");
 
 const SEVERITY_LABELS = { 1: "error", 2: "warning", 3: "info", 4: "hint" };
 const SEVERITY_COLORS = { 1: "\x1b[31m", 2: "\x1b[33m", 3: "\x1b[36m", 4: "\x1b[90m" };
@@ -24,12 +29,14 @@ ${BOLD}Options:${RESET}
   --quiet                   Only show errors, suppress warnings/info
   --no-color                Disable colored output
   --json                    Output diagnostics as JSON
+  --trace-files             Log every file the TypeService opens (stderr; also BLAZE_COMPONENT_LSP_TRACE_FILES=1)
   -h, --help                Show this help
 
 ${BOLD}Examples:${RESET}
   blaze-check .                          Check all HTML files under current directory
   blaze-check imports/ui/               Check a specific folder
   blaze-check imports/ui/views/index.html  Check a single file
+  blaze-check --trace-files services/recruit/app 2>trace.log
   npx blaze-check .                     Run via npx
 `);
 }
@@ -50,6 +57,7 @@ function main() {
       case "--quiet": quiet = true; break;
       case "--no-color": useColor = false; break;
       case "--json": jsonOutput = true; break;
+      case "--trace-files": setFileTraceEnabled(true); break;
       case "-h": case "--help": printUsage(); process.exit(0);
       default:
         if (arg.startsWith("-")) {
@@ -87,12 +95,26 @@ function main() {
   /** @type {Map<string, ProjectIndex>} meteorRoot → index */
   const indexes = new Map();
 
+  if (isFileTraceEnabled()) {
+    traceFiles(`cli start htmlTargets=${htmlFiles.length}`);
+  }
+
   for (const file of htmlFiles) {
     const meteorRoot = findMeteorRoot(file);
     if (!meteorRoot) continue;
     if (!indexes.has(meteorRoot)) {
       const index = new ProjectIndex(meteorRoot);
+      if (isFileTraceEnabled()) {
+        traceFiles(`scan begin meteorRoot=${meteorRoot}`);
+      }
+      const t0 = Date.now();
       index.scan();
+      if (isFileTraceEnabled()) {
+        traceFiles(
+          `scan done meteorRoot=${meteorRoot} templates=${index.templateIndexer.size} ` +
+          `components=${index.componentIndexer.size} elapsedMs=${Date.now() - t0}`
+        );
+      }
       indexes.set(meteorRoot, index);
     }
   }
