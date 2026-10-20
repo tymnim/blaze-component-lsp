@@ -92,31 +92,42 @@ function main() {
     process.exit(0);
   }
 
+  /** Meteor roots implied by CLI targets only (not by realpath-discovered HTML). */
+  /** @type {Set<string>} */
+  const allowedRoots = new Set();
+  for (const target of targets) {
+    const root = findMeteorRoot(path.resolve(target));
+    if (root) allowedRoots.add(root);
+  }
+
   /** @type {Map<string, ProjectIndex>} meteorRoot → index */
   const indexes = new Map();
 
   if (isFileTraceEnabled()) {
-    traceFiles(`cli start htmlTargets=${htmlFiles.length}`);
+    traceFiles(
+      `cli start htmlTargets=${htmlFiles.length} allowedRoots=${[...allowedRoots].join("|") || "(none)"}`
+    );
   }
 
-  for (const file of htmlFiles) {
-    const meteorRoot = findMeteorRoot(file);
-    if (!meteorRoot) continue;
-    if (!indexes.has(meteorRoot)) {
-      const index = new ProjectIndex(meteorRoot);
-      if (isFileTraceEnabled()) {
-        traceFiles(`scan begin meteorRoot=${meteorRoot}`);
-      }
-      const t0 = Date.now();
-      index.scan();
-      if (isFileTraceEnabled()) {
-        traceFiles(
-          `scan done meteorRoot=${meteorRoot} templates=${index.templateIndexer.size} ` +
-          `components=${index.componentIndexer.size} elapsedMs=${Date.now() - t0}`
-        );
-      }
-      indexes.set(meteorRoot, index);
+  for (const root of allowedRoots) {
+    const index = new ProjectIndex(root);
+    if (isFileTraceEnabled()) {
+      traceFiles(`scan begin meteorRoot=${root}`);
     }
+    const t0 = Date.now();
+    index.scan();
+    if (isFileTraceEnabled()) {
+      traceFiles(
+        `scan done meteorRoot=${root} templates=${index.templateIndexer.size} ` +
+        `components=${index.componentIndexer.size} elapsedMs=${Date.now() - t0}`
+      );
+    }
+    indexes.set(root, index);
+  }
+
+  if (indexes.size === 0) {
+    console.error("No Meteor project root (.meteor) found for the given paths.");
+    process.exit(1);
   }
 
   /** @type {{ errorOnTypeMismatch: boolean }} */
@@ -142,8 +153,12 @@ function main() {
 
   for (const file of htmlFiles) {
     const meteorRoot = findMeteorRoot(file);
-    if (!meteorRoot) continue;
-    const index = indexes.get(meteorRoot);
+    // Prefer the file's own root when it is one we intentionally scanned; otherwise
+    // fall back to the single allowed root (package symlink HTML under this app).
+    let index = meteorRoot ? indexes.get(meteorRoot) : undefined;
+    if (!index && allowedRoots.size === 1) {
+      index = indexes.get([...allowedRoots][0]);
+    }
     if (!index) continue;
 
     const source = fs.readFileSync(file, "utf-8");
@@ -224,15 +239,25 @@ function collectHtmlFiles(dir, results) {
 
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory() || entry.isSymbolicLink()) {
-      if (IGNORE.has(entry.name) || entry.name.startsWith(".")) continue;
+    if (IGNORE.has(entry.name) || entry.name.startsWith(".")) continue;
+
+    // Follow package symlinks for traversal, but keep the *logical* path under the
+    // CLI target. realpathSync would jump to shared_packages / other services and
+    // expose nested .meteor roots (e.g. bootstrap-3-modal/examples), causing the
+    // CLI to create extra ProjectIndexes and pull in foreign tsconfigs.
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    if (entry.isSymbolicLink()) {
       try {
-        const realPath = fs.realpathSync(full);
-        if (fs.statSync(realPath).isDirectory()) {
-          collectHtmlFiles(realPath, results);
-        }
+        const st = fs.statSync(full);
+        isDir = st.isDirectory();
+        isFile = st.isFile();
       } catch { continue; }
-    } else if (entry.isFile() && entry.name.endsWith(".html")) {
+    }
+
+    if (isDir) {
+      collectHtmlFiles(full, results);
+    } else if (isFile && entry.name.endsWith(".html")) {
       results.push(full);
     }
   }

@@ -140,13 +140,15 @@ class TypeService {
 
   /**
    * Load tsconfig.json from the project root if present.
+   *
+   * Only accepts a tsconfig inside this Meteor root. `ts.findConfigFile` walks
+   * parent directories and would otherwise pick up the monorepo-root tsconfig
+   * (e.g. when the root is a nested package `.meteor` like
+   * `bootstrap-3-modal/examples`), pulling unrelated services into the program.
    */
   _loadConfig() {
-    const configPath = ts.findConfigFile(
-      this.rootPath,
-      (p) => fs.existsSync(p),
-      "tsconfig.json"
-    );
+    const localConfig = path.join(this.rootPath, "tsconfig.json");
+    const configPath = fs.existsSync(localConfig) ? localConfig : null;
 
     if (!configPath) {
       this._rootFileNames = this._collectJsFiles(this.rootPath);
