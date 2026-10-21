@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { ProjectIndex } = require("../server/indexer/projectIndex");
 const { getDiagnostics } = require("../server/providers/diagnosticProvider");
-const { findMeteorRoot } = require("../server/utils/uri");
+const { findProjectRoot } = require("../server/utils/uri");
 const {
   setFileTraceEnabled,
   isFileTraceEnabled,
@@ -92,11 +92,11 @@ function main() {
     process.exit(0);
   }
 
-  /** Meteor roots implied by CLI targets only (not by realpath-discovered HTML). */
+  /** App (.meteor) or package (package.js) roots implied by CLI targets only. */
   /** @type {Set<string>} */
   const allowedRoots = new Set();
   for (const target of targets) {
-    const root = findMeteorRoot(path.resolve(target));
+    const root = findProjectRoot(path.resolve(target));
     if (root) allowedRoots.add(root);
   }
 
@@ -132,7 +132,9 @@ function main() {
   }
 
   if (indexes.size === 0) {
-    console.error("No Meteor project root (.meteor) found for the given paths.");
+    console.error(
+      "No Meteor app (.meteor) or package (package.js) root found for the given paths."
+    );
     process.exit(1);
   }
 
@@ -158,10 +160,10 @@ function main() {
   const allResults = [];
 
   for (const file of htmlFiles) {
-    const meteorRoot = findMeteorRoot(file);
+    const projectRoot = findProjectRoot(file);
     // Prefer the file's own root when it is one we intentionally scanned; otherwise
     // fall back to the single allowed root (package symlink HTML under this app).
-    let index = meteorRoot ? indexes.get(meteorRoot) : undefined;
+    let index = projectRoot ? indexes.get(projectRoot) : undefined;
     if (!index && allowedRoots.size === 1) {
       index = indexes.get([...allowedRoots][0]);
     }

@@ -23,13 +23,14 @@ describe("template registry emitter", () => {
     index.scan();
     const src = generateRegistrySource(index);
     assert.ok(src.includes("declare module \"blaze-component-lsp\""));
-    assert.ok(src.includes("TemplateContextMap"));
+    assert.ok(src.includes("interface TemplateContextMap"));
     assert.ok(src.includes("\"toggleButton\""));
     assert.ok(src.includes("\"template1\""));
     assert.ok(src.includes("\"template2\""));
-    assert.ok(src.includes("export type Template = keyof TemplateContextMap"));
-    assert.ok(src.includes("ContextDataFrom"));
-    assert.ok(src.includes("TemplateEntry"));
+    // Template / ContextDataFrom live in types/index.d.ts; emitter only augments the map
+    assert.ok(!src.includes("export type Template ="));
+    assert.ok(!src.includes("type ContextDataFrom"));
+    assert.ok(!src.includes("TemplateEntry"));
     assert.ok(!src.includes("TemplateTab"));
   });
 

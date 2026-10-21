@@ -3,9 +3,20 @@
   "version": "0.1.0",
   "description": "LSP server for Meteor Blaze templates with BlazeComponent",
   "main": "server/index.js",
+  "types": "types/index.d.ts",
   "bin": {
     "blaze-component-lsp": "server/index.js",
     "blaze-check": "cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./server/index.js"
+    },
+    "./types": {
+      "types": "./types/index.d.ts",
+      "default": "./types/index.d.ts"
+    }
   },
   "scripts": {
     "start": "node server/index.js --stdio",

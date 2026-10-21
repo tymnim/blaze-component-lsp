@@ -18,7 +18,7 @@
         "packages/blaze-component/templating.d.ts"
       ],
       "blaze-component-lsp": [
-        ".blaze-component-lsp/templates.d.ts"
+        "packages/blaze-component-lsp/package.d.ts"
       ]
     }
   },

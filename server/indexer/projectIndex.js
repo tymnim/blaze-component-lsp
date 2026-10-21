@@ -235,7 +235,9 @@ class ProjectIndex {
       if (!raw.includes("blaze-component-lsp")) {
         this._warnedMissingPath = true;
         console.error(
-          `[blaze-component-lsp] Tip: map "blaze-component-lsp" → "${path.relative(this.rootPath, registryPath)}" in tsconfig paths so import(\"blaze-component-lsp\").Template resolves in the editor.`
+          `[blaze-component-lsp] Tip: map "blaze-component-lsp" → the package types stub ` +
+          `(node_modules/blaze-component-lsp/types/index.d.ts) and include ` +
+          `".blaze-component-lsp/**/*.d.ts" so TemplateContextMap augmentations merge in this program.`
         );
       }
     } catch {

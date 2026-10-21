@@ -288,9 +288,12 @@ Type resolution uses a real TypeScript LanguageService per `.meteor` root. For b
 
 - Enables `allowJs` / `checkJs` (defaults if omitted)
 - Maps Meteor packages via `compilerOptions.paths`, especially `meteor/znewsham:blaze-component` to your BlazeComponent `.d.ts`
-- Maps `"blaze-component-lsp"` to the generated registry (see below)
+- Installs `blaze-component-lsp` (types stub) and maps `"blaze-component-lsp"` to its placeholder types
+- Includes **this program’s** `.blaze-component-lsp/**/*.d.ts` so generated augmentations merge into `TemplateContextMap`
 
-Example:
+In a monorepo, add the package as a **root** `devDependency`. Each Meteor app and each Meteor package with HTML is its own TypeScript program: the root tsconfig must **not** include every `.blaze-component-lsp` folder (ambient maps merge within a program).
+
+Example (Meteor app or package):
 
 ```json
 {
@@ -303,10 +306,14 @@ Example:
         "packages/blaze-component/blaze-component.d.ts"
       ],
       "blaze-component-lsp": [
-        ".blaze-component-lsp/templates.d.ts"
+        "../../node_modules/blaze-component-lsp/types/index.d.ts"
       ]
     }
-  }
+  },
+  "include": [
+    "imports/**/*",
+    ".blaze-component-lsp/**/*.d.ts"
+  ]
 }
 ```
 
@@ -314,17 +321,21 @@ Without usable path mappings, ContextData/helper types fall back to JSDoc string
 
 ### Generated registry + startup cache
 
-On scan/update the LSP writes under `.blaze-component-lsp/`:
+On scan/update the LSP writes under `.blaze-component-lsp/` for that app or package root:
 
 | File | Purpose |
 |------|---------|
-| `templates.d.ts` | `Template`, `ContextDataFrom<T>`, `TemplateEntry` |
-| `helpers.d.ts` | `GlobalHelpers`, `TemplateHelpersMap`, `HelpersOf<T>` |
+| `templates.d.ts` | Augments `TemplateContextMap` for this program |
+| `helpers.d.ts` | Augments `GlobalHelpers` / `TemplateHelpersMap` |
 | `index-cache.json` | Fast LSP cold-start snapshot (signatures, docs, file ranges) |
+
+Placeholder aliases (`Template`, `ContextDataFrom`, `TemplateEntry`, …) live in the installed package (`types/index.d.ts`).
 
 **Startup:** the first open of an app hydrates from `index-cache.json` (if present) so completions/hover work immediately, then re-indexes in the background and rewrites the cache. The first open after a clone builds the cache in the background.
 
-Add `.blaze-component-lsp/` to `.gitignore`. Map `blaze-component-lsp` → `templates.d.ts` in `tsconfig` as shown above (`templates.d.ts` references `helpers.d.ts`).
+Add `.blaze-component-lsp/` to `.gitignore`. Map `blaze-component-lsp` → the package types stub and **include** `.blaze-component-lsp/**/*.d.ts` as shown above.
+
+**Package-local templates:** indexing a Meteor package directory (has `package.js`, no enclosing `.meteor`) emits a registry under that package only. Open/check that package with its own tsconfig so its `Template` union does not leak into other packages.
 
 User-defined shapes (preferred over any fixed “Tab” type):
 

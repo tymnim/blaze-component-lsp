@@ -24,7 +24,7 @@ function pathToUri(filePath) {
 }
 
 /**
- * Find the Meteor project root by looking for a .meteor directory.
+ * Find the Meteor app root by looking for a .meteor directory.
  * @param {string} startPath - A file or directory path
  * @returns {string|null}
  */
@@ -46,4 +46,45 @@ function findMeteorRoot(startPath) {
   return null;
 }
 
-module.exports = { uriToPath, pathToUri, findMeteorRoot };
+/**
+ * Find a Meteor package root (directory containing package.js).
+ * Prefers the nearest package.js when walking up; stops at filesystem root.
+ * @param {string} startPath
+ * @returns {string|null}
+ */
+function findPackageRoot(startPath) {
+  const fs = require("node:fs");
+  let dir = path.isAbsolute(startPath)
+    ? (fs.statSync(startPath).isDirectory() ? startPath : path.dirname(startPath))
+    : startPath;
+
+  while (dir !== path.dirname(dir)) {
+    try {
+      if (fs.statSync(path.join(dir, "package.js")).isFile()) {
+        return dir;
+      }
+    } catch {}
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+/**
+ * Index root for blaze-component-lsp: Meteor app (.meteor) wins over package
+ * (package.js) so files under an app stay in the app program. Standalone
+ * shared packages (no enclosing .meteor) use the package root so their
+ * Template map stays package-local.
+ * @param {string} startPath
+ * @returns {string|null}
+ */
+function findProjectRoot(startPath) {
+  return findMeteorRoot(startPath) || findPackageRoot(startPath);
+}
+
+module.exports = {
+  uriToPath,
+  pathToUri,
+  findMeteorRoot,
+  findPackageRoot,
+  findProjectRoot
+};

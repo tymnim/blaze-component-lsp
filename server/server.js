@@ -17,7 +17,7 @@ const { getHover } = require("./providers/hoverProvider");
 const { getDefinition } = require("./providers/definitionProvider");
 const { getDiagnostics } = require("./providers/diagnosticProvider");
 const { getReferences } = require("./providers/referenceProvider");
-const { uriToPath, findMeteorRoot } = require("./utils/uri");
+const { uriToPath, findProjectRoot } = require("./utils/uri");
 
 /**
  * Create and configure the LSP server.
@@ -44,7 +44,7 @@ function createServer(connection) {
    * @returns {{ errorOnTypeMismatch: boolean }}
    */
   function getConfigForFile(filePath) {
-    const meteorRoot = findMeteorRoot(filePath);
+    const meteorRoot = findProjectRoot(filePath);
     if (!meteorRoot) return { errorOnTypeMismatch: false };
 
     const cached = projectConfigs.get(meteorRoot);
@@ -72,7 +72,7 @@ function createServer(connection) {
    * @returns {ProjectIndex|null}
    */
   function getIndexForFile(filePath) {
-    const meteorRoot = findMeteorRoot(filePath);
+    const meteorRoot = findProjectRoot(filePath);
     if (!meteorRoot) return null;
 
     let index = projectIndexes.get(meteorRoot);
@@ -105,7 +105,7 @@ function createServer(connection) {
    * @param {ProjectIndex} index
    */
   function ensureFreshIndex(filePath, index) {
-    const meteorRoot = findMeteorRoot(filePath) || filePath;
+    const meteorRoot = findProjectRoot(filePath) || filePath;
     const now = Date.now();
     const lastRefresh = lastRefreshTimes.get(meteorRoot) || 0;
     if (now - lastRefresh < 1000) return;
@@ -122,7 +122,7 @@ function createServer(connection) {
    * @param {ProjectIndex} index
    */
   function forceRefreshIndex(filePath, index) {
-    const meteorRoot = findMeteorRoot(filePath) || filePath;
+    const meteorRoot = findProjectRoot(filePath) || filePath;
     lastRefreshTimes.set(meteorRoot, Date.now());
     if (index.refreshStaleComponents()) {
       connection.console.log(`[refresh] Re-indexed stale JS files for ${meteorRoot}`);
@@ -178,7 +178,7 @@ function createServer(connection) {
     if (filePath.endsWith(".html")) {
       scheduleDiagnostics(change.document);
     } else if (filePath.endsWith(".js")) {
-      const meteorRoot = findMeteorRoot(filePath);
+      const meteorRoot = findProjectRoot(filePath);
       if (meteorRoot) lastRefreshTimes.delete(meteorRoot);
       scheduleHtmlDiagnosticsForIndex(index);
     }
@@ -224,7 +224,7 @@ function createServer(connection) {
     for (const change of params.changes) {
       const filePath = uriToPath(change.uri);
       if (filePath.endsWith("blaze-component-config.json")) {
-        const meteorRoot = findMeteorRoot(filePath);
+        const meteorRoot = findProjectRoot(filePath);
         if (meteorRoot) {
           projectConfigs.delete(meteorRoot);
           connection.console.log(`[watch] Config invalidated for ${meteorRoot}`);
@@ -254,7 +254,7 @@ function createServer(connection) {
 
       if (filePath.endsWith(".js")) {
         jsChangedIndexes.add(index);
-        const meteorRoot = findMeteorRoot(filePath);
+        const meteorRoot = findProjectRoot(filePath);
         if (meteorRoot) lastRefreshTimes.delete(meteorRoot);
       }
     }
