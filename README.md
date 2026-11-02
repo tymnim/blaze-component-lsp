@@ -29,37 +29,33 @@ Provides editor intelligence for HTML template files — aware of your templates
 
 ## Setup
 
-### Prerequisites
+Install in your Meteor project (or monorepo root):
 
 ```bash
-git clone <repo-url> ~/Projects/blaze-component-lsp
-cd ~/Projects/blaze-component-lsp
-npm install
+npm install -D blaze-component-lsp
 ```
+
+After install, the package lives at `node_modules/blaze-component-lsp`. Point editors and scripts at paths under that folder (or use the `blaze-component-lsp` / `blaze-check` bins from `node_modules/.bin`).
 
 ### VS Code
 
-1. Install the extension dependencies:
+1. Install the extension's dependencies once:
 
 ```bash
-cd ~/Projects/blaze-component-lsp/client/vscode
+cd node_modules/blaze-component-lsp/client/vscode
 npm install
 ```
 
-2. Install the server dependencies:
+2. Symlink the extension into your VS Code extensions directory. The directory name **must** follow the `publisher.name-version` format:
 
 ```bash
-cd ~/Projects/blaze-component-lsp
-npm install
+ln -s "$(pwd)/node_modules/blaze-component-lsp/client/vscode" \
+  ~/.vscode/extensions/blaze-component-lsp.blaze-component-lsp-0.1.0
 ```
 
-3. Symlink the extension into your VS Code extensions directory. The directory name **must** follow the `publisher.name-version` format:
+(Run the `ln -s` from your project root, or expand the path yourself.) The extension resolves the server via `../../server/index.js` relative to `client/vscode`, which matches the installed package layout.
 
-```bash
-ln -s ~/Projects/blaze-component-lsp/client/vscode ~/.vscode/extensions/blaze-component-lsp.blaze-component-lsp-0.1.0
-```
-
-4. Reload VS Code (`Developer: Reload Window`). The extension activates automatically when it detects a `.meteor` directory in your workspace.
+3. Reload VS Code (`Developer: Reload Window`). The extension activates automatically when it detects a `.meteor` directory in your workspace.
 
 To verify it's loaded, check the Output panel — select "Blaze Component LSP" from the dropdown. You should see startup logs.
 
@@ -79,15 +75,19 @@ To verify it's loaded, check the Output panel — select "Blaze Component LSP" f
 
 ### Neovim
 
+Resolve the installed package root once (adjust if your Neovim cwd is not the project root):
+
+```lua
+local blaze_root = vim.fn.getcwd() .. "/node_modules/blaze-component-lsp"
+```
+
 #### LSP Server
 
 **Option A: Native `vim.lsp.config` (Neovim 0.11+)**
 
-Add to your Neovim config (e.g. `~/.config/nvim/init.lua`):
-
 ```lua
 vim.lsp.config.blaze_component_lsp = {
-  cmd = { "node", vim.fn.expand("~/Projects/blaze-component-lsp/server/index.js"), "--stdio" },
+  cmd = { "node", blaze_root .. "/server/index.js", "--stdio" },
   filetypes = { "html" },
   root_markers = { ".meteor" },
 }
@@ -104,7 +104,7 @@ local configs = require("lspconfig.configs")
 if not configs.blaze_component_lsp then
   configs.blaze_component_lsp = {
     default_config = {
-      cmd = { "node", vim.fn.expand("~/Projects/blaze-component-lsp/server/index.js"), "--stdio" },
+      cmd = { "node", blaze_root .. "/server/index.js", "--stdio" },
       filetypes = { "html" },
       root_dir = lspconfig.util.root_pattern(".meteor"),
       single_file_support = false,
@@ -117,17 +117,17 @@ lspconfig.blaze_component_lsp.setup({})
 
 **Option C: Coc.nvim**
 
-Add to `:CocConfig`:
+Add to `:CocConfig` (use an absolute path to your project's `node_modules`):
 
 ```json
 {
   "languageserver": {
     "blaze-component-lsp": {
       "command": "node",
-      "args": ["~/Projects/blaze-component-lsp/server/index.js", "--stdio"],
+      "args": ["./node_modules/blaze-component-lsp/server/index.js", "--stdio"],
       "filetypes": ["html"],
       "rootPatterns": [".meteor"]
-    Blaze Component}
+    }
   }
 }
 ```
@@ -137,7 +137,7 @@ Add to `:CocConfig`:
 Add the runtime path **before** your plugin manager loads (near the top of `init.lua`):
 
 ```lua
-vim.opt.runtimepath:prepend(vim.fn.expand("~/Projects/blaze-component-lsp/client/neovim"))
+vim.opt.runtimepath:prepend(blaze_root .. "/client/neovim")
 ```
 
 This loads Spacebars syntax highlighting for HTML files, working alongside Tree-sitter.
@@ -148,14 +148,14 @@ Requires the [LSP](https://packagecontrol.io/packages/LSP) package.
 
 #### LSP Server
 
-Add to your LSP settings (`Preferences > Package Settings > LSP > Settings`):
+Add to your LSP settings (`Preferences > Package Settings > LSP > Settings`), using your project's installed package path:
 
 ```json
 {
   "clients": {
     "blaze-component-lsp": {
       "enabled": true,
-      "command": ["node", "/path/to/blaze-component-lsp/server/index.js", "--stdio"],
+      "command": ["node", "/absolute/path/to/project/node_modules/blaze-component-lsp/server/index.js", "--stdio"],
       "selector": "text.html.basic | text.html.spacebars"
     }
   }
@@ -175,11 +175,11 @@ To enable auto-triggered completions for Spacebars expressions, add to your Subl
 Copy the syntax file into your Sublime `Packages/User/` directory:
 
 ```bash
-cp /path/to/blaze-component-lsp/client/sublime/Spacebars.sublime-syntax \
-   "$(sublime --command 'echo $SUBLIME_PACKAGES' 2>/dev/null || echo ~/.config/sublime-text/Packages)/User/Spacebars.sublime-syntax"
+cp node_modules/blaze-component-lsp/client/sublime/Spacebars.sublime-syntax \
+   ~/.config/sublime-text/Packages/User/Spacebars.sublime-syntax
 ```
 
-Or manually: open `Preferences > Browse Packages`, navigate into `User/`, and copy `client/sublime/Spacebars.sublime-syntax` there.
+Or manually: open `Preferences > Browse Packages`, navigate into `User/`, and copy `node_modules/blaze-component-lsp/client/sublime/Spacebars.sublime-syntax` there.
 
 Then set HTML files to use the Spacebars syntax: `View > Syntax > User > Spacebars HTML`, or to make it the default for all `.html` files: `View > Syntax > Open all with current extension as... > Spacebars HTML`.
 
@@ -190,13 +190,9 @@ Run type-checking on Blaze HTML templates from the command line, similar to ESLi
 ### Usage
 
 ```bash
-# Run directly
-node ~/Projects/blaze-component-lsp/cli/index.js [options] [file|folder...]
-
-# Or link globally
-cd ~/Projects/blaze-component-lsp
-npm link
-blaze-check [options] [file|folder...]
+npx blaze-check [options] [file|folder...]
+# or, after install, via the local bin:
+./node_modules/.bin/blaze-check [options] [file|folder...]
 ```
 
 ### Add to npm scripts
@@ -206,8 +202,8 @@ In your Meteor project's `package.json`:
 ```json
 {
   "scripts": {
-    "blaze-check": "node ~/Projects/blaze-component-lsp/cli/index.js .",
-    "blaze-check:strict": "node ~/Projects/blaze-component-lsp/cli/index.js --error-on-type-mismatch ."
+    "blaze-check": "blaze-check .",
+    "blaze-check:strict": "blaze-check --error-on-type-mismatch ."
   }
 }
 ```
