@@ -9,19 +9,21 @@ const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 let client;
 
 /**
- * Check if a directory contains .meteor anywhere up to 4 levels deep.
+ * Check if a directory is (or contains) a Meteor app (.meteor) or package
+ * (package.js), searching up to 4 levels deep.
  * @param {string} dir
  * @param {number} [depth=0]
  * @returns {boolean}
  */
-function hasMeteorProject(dir, depth = 0) {
+function hasBlazeWorkspace(dir, depth = 0) {
   if (fs.existsSync(path.join(dir, ".meteor"))) return true;
+  if (fs.existsSync(path.join(dir, "package.js"))) return true;
   if (depth >= 4) return false;
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-      if (hasMeteorProject(path.join(dir, entry.name), depth + 1)) return true;
+      if (hasBlazeWorkspace(path.join(dir, entry.name), depth + 1)) return true;
     }
   } catch {}
   return false;
@@ -41,11 +43,11 @@ function activate(context) {
   const folders = workspace.workspaceFolders || [];
   outputChannel.appendLine(`[blaze-lsp] Workspace folders: ${folders.map(f => f.uri.fsPath).join(", ") || "(none)"}`);
 
-  const hasMeteor = folders.some(folder => hasMeteorProject(folder.uri.fsPath));
-  outputChannel.appendLine(`[blaze-lsp] Has Meteor project: ${hasMeteor}`);
+  const hasWorkspace = folders.some(folder => hasBlazeWorkspace(folder.uri.fsPath));
+  outputChannel.appendLine(`[blaze-lsp] Has Meteor app or package: ${hasWorkspace}`);
 
-  if (!hasMeteor) {
-    outputChannel.appendLine("[blaze-lsp] No Meteor project found, not activating");
+  if (!hasWorkspace) {
+    outputChannel.appendLine("[blaze-lsp] No .meteor or package.js found, not activating");
     return;
   }
 

@@ -25,7 +25,7 @@ Provides editor intelligence for HTML template files — aware of your templates
 - `@extends {BlazeComponent<Type>}` for simple context types
 - `Blaze.registerHelper()` and `Template.registerHelper()` for global helpers
 - Block templates (templates using `Template.contentBlock` / `Template.elseBlock`)
-- Monorepo support — scoped per `.meteor` project root
+- Monorepo support — scoped per `.meteor` app or `package.js` package root
 
 ## Setup
 
@@ -55,7 +55,7 @@ ln -s "$(pwd)/node_modules/blaze-component-lsp/client/vscode" \
 
 (Run the `ln -s` from your project root, or expand the path yourself.) The extension resolves the server via `../../server/index.js` relative to `client/vscode`, which matches the installed package layout.
 
-3. Reload VS Code (`Developer: Reload Window`). The extension activates automatically when it detects a `.meteor` directory in your workspace.
+3. Reload VS Code (`Developer: Reload Window`). The extension activates when it detects a `.meteor` directory or a Meteor `package.js` in your workspace.
 
 To verify it's loaded, check the Output panel — select "Blaze Component LSP" from the dropdown. You should see startup logs.
 
@@ -89,7 +89,7 @@ local blaze_root = vim.fn.getcwd() .. "/node_modules/blaze-component-lsp"
 vim.lsp.config.blaze_component_lsp = {
   cmd = { "node", blaze_root .. "/server/index.js", "--stdio" },
   filetypes = { "html" },
-  root_markers = { ".meteor" },
+  root_markers = { "package.js", ".meteor" },
 }
 
 vim.lsp.enable("blaze_component_lsp")
@@ -106,7 +106,7 @@ if not configs.blaze_component_lsp then
     default_config = {
       cmd = { "node", blaze_root .. "/server/index.js", "--stdio" },
       filetypes = { "html" },
-      root_dir = lspconfig.util.root_pattern(".meteor"),
+      root_dir = lspconfig.util.root_pattern("package.js", ".meteor"),
       single_file_support = false,
     },
   }
@@ -126,7 +126,7 @@ Add to `:CocConfig` (use an absolute path to your project's `node_modules`):
       "command": "node",
       "args": ["./node_modules/blaze-component-lsp/server/index.js", "--stdio"],
       "filetypes": ["html"],
-      "rootPatterns": [".meteor"]
+      "rootPatterns": ["package.js", ".meteor"]
     }
   }
 }
@@ -260,7 +260,7 @@ JSON mode (`--json`):
 
 ## Configuration
 
-Create a `blaze-component-config.json` file in the same directory as your `.meteor` folder (the Meteor project root):
+Create a `blaze-component-config.json` file next to `.meteor` (app) or `package.js` (package):
 
 ```json
 {
@@ -280,7 +280,7 @@ The LSP server picks up changes to this file automatically — no restart requir
 
 ### TypeScript / `tsconfig.json`
 
-Type resolution uses a real TypeScript LanguageService per `.meteor` root. For best results, put a `tsconfig.json` next to `.meteor` that:
+Type resolution uses a real TypeScript LanguageService per app (`.meteor`) or package (`package.js`) root. Nearest `package.js` wins over an enclosing `.meteor`, so `blaze-check` / the LSP write `.blaze-component-lsp/` under the package when you are in one. For best results, put a `tsconfig.json` next to that root that:
 
 - Enables `allowJs` / `checkJs` (defaults if omitted)
 - Maps Meteor packages via `compilerOptions.paths`, especially `meteor/znewsham:blaze-component` to your BlazeComponent `.d.ts`
@@ -331,7 +331,7 @@ Placeholder aliases (`Template`, `ContextDataFrom`, `TemplateEntry`, …) live i
 
 Add `.blaze-component-lsp/` to `.gitignore`. Map `blaze-component-lsp` → the package types stub and **include** `.blaze-component-lsp/**/*.d.ts` as shown above.
 
-**Package-local templates:** indexing a Meteor package directory (has `package.js`, no enclosing `.meteor`) emits a registry under that package only. Open/check that package with its own tsconfig so its `Template` union does not leak into other packages.
+**Package-local templates:** indexing a Meteor package (directory with `package.js`) emits a registry under that package — even when it sits inside an app’s `.meteor` tree. Open/check that package with its own tsconfig (and `include` `.blaze-component-lsp/**/*.d.ts`) so its `Template` map does not leak into other packages or the app program.
 
 User-defined shapes (preferred over any fixed “Tab” type):
 

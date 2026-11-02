@@ -70,15 +70,15 @@ function findPackageRoot(startPath) {
 }
 
 /**
- * Index root for blaze-component-lsp: Meteor app (.meteor) wins over package
- * (package.js) so files under an app stay in the app program. Standalone
- * shared packages (no enclosing .meteor) use the package root so their
- * Template map stays package-local.
+ * Index root for blaze-component-lsp: nearest package.js wins over an enclosing
+ * .meteor so local / shared packages get their own index and
+ * `.blaze-component-lsp/` registry (TemplateContextMap stays package-local).
+ * App files outside any package still use the .meteor root.
  * @param {string} startPath
  * @returns {string|null}
  */
 function findProjectRoot(startPath) {
-  return findMeteorRoot(startPath) || findPackageRoot(startPath);
+  return findPackageRoot(startPath) || findMeteorRoot(startPath);
 }
 
 module.exports = {
