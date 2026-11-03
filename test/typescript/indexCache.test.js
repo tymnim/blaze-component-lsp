@@ -105,6 +105,26 @@ describe("index-cache hydrate + boot", () => {
     assert.ok(fs.existsSync(getIndexCachePath(typedRoot)));
   });
 
+  it("worker boot enriches off-thread without readying TypeService here", async () => {
+    const seed = new ProjectIndex(typedRoot);
+    seed.scan();
+
+    const index = new ProjectIndex(typedRoot);
+    const done = new Promise((resolve) => {
+      index.boot({ useWorker: true, onScanComplete: () => resolve(undefined) });
+    });
+    try {
+      await done;
+      assert.equal(index.scanning, false);
+      assert.equal(index.typeService.isReady, false, "checker must stay off the main thread");
+      assert.ok(index.getGlobalHelper("queryParamsWith"));
+      assert.equal(index.isTypeAssignable("number", "string"), false);
+      assert.equal(index.isTypeAssignable("\"a\"", "string"), true);
+    } finally {
+      index.dispose();
+    }
+  });
+
   it("background scan overwrites stale cache entry", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "blaze-cache-"));
     try {

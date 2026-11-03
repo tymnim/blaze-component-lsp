@@ -92,8 +92,10 @@ class ComponentIndexer {
 
   /**
    * Re-index any JS files whose mtime on disk is newer than when we last indexed them.
+   * @param {(filePath: string) => void} [onFile] - called for each re-indexed file
+   * @returns {boolean}
    */
-  refreshStaleFiles() {
+  refreshStaleFiles(onFile) {
     let changed = false;
     for (const filePath of this._mtimes.keys()) {
       try {
@@ -102,11 +104,27 @@ class ComponentIndexer {
         if (stat.mtimeMs > lastIndexed) {
           if (this.typeService) this.typeService.invalidateFile(filePath);
           this.indexFile(filePath);
+          if (onFile) onFile(filePath);
           changed = true;
         }
       } catch {}
     }
     return changed;
+  }
+
+  /**
+   * Replace a file's components/globals with results computed elsewhere (enrichment worker).
+   * @param {string} filePath
+   * @param {ComponentInfo[]} components
+   * @param {GlobalHelperInfo[]} globals
+   */
+  applyFileResult(filePath, components, globals) {
+    this.removeFile(filePath);
+    for (const comp of components) this.components.set(comp.templateName, comp);
+    this.fileComponents.set(filePath, components);
+    for (const g of globals) this.globalHelpers.set(g.name, g);
+    this._fileGlobalHelpers.set(filePath, globals);
+    this._mtimes.set(filePath, safeMtime(filePath));
   }
 
   /**
@@ -272,12 +290,13 @@ class ComponentIndexer {
       ...this._fileGlobalHelpers.keys()
     ]);
 
-    let n = 0;
+    // Yield on elapsed time, not file count: checker cost per file varies wildly.
+    let sliceStart = Date.now();
     for (const filePath of files) {
       this._enrichFile(filePath);
-      n++;
-      if (n % batchSize === 0 && yieldFn) {
+      if (yieldFn && Date.now() - sliceStart >= 15) {
         await yieldFn();
+        sliceStart = Date.now();
       }
     }
   }

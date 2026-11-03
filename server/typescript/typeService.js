@@ -50,6 +50,8 @@ class TypeService {
     this._versions = new Map();
     /** @type {string[]} */
     this._rootFileNames = [];
+    /** @type {((filePath: string, content: string) => void)|null} */
+    this.onOverlay = null;
     /** @type {ts.CompilerOptions} */
     this._compilerOptions = {
       allowJs: true,
@@ -307,6 +309,7 @@ class TypeService {
     const existing = this._overlays.get(filePath);
     const version = existing ? existing.version + 1 : 1;
     this._overlays.set(filePath, { version, content });
+    if (this.onOverlay) this.onOverlay(filePath, content);
     if (this._ready && !this._rootFileNames.includes(filePath)) {
       this._rootFileNames.push(filePath);
     } else if (!this._ready) {

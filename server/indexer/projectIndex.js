@@ -3,9 +3,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { TemplateIndexer } = require("./templateIndexer");
 const { ComponentIndexer } = require("./componentIndexer");
-const { TypeService, isFileTraceEnabled, traceFiles } = require("../typescript/typeService");
+const { TypeService, isFileTraceEnabled, traceFiles, fallbackStringMatch } = require("../typescript/typeService");
 const { createDebouncedEmitter, getRegistryPath } = require("../typescript/templateRegistryEmitter");
 const { loadIndexCache, hydrateFromCache } = require("../typescript/indexCache");
+const { Worker, MessageChannel, receiveMessageOnPort } = require("node:worker_threads");
+
+const SYNC_QUERY_TIMEOUT_MS = 1000;
 
 /**
  * @typedef {import("../parsers/spacebarsParser").TemplateBlock} TemplateBlock
@@ -54,17 +57,33 @@ class ProjectIndex {
     this._onScanComplete = null;
     /** @type {boolean} */
     this._bootScheduled = false;
+    /** @type {Worker|null} */
+    this._worker = null;
+    /** @type {boolean} */
+    this._workerTypesReady = false;
+    /** @type {{ port: import("node:worker_threads").MessagePort, flag: Int32Array }|null} */
+    this._syncChannel = null;
+    this._syncQueryId = 0;
+    /** @type {Map<string, boolean>} */
+    this._assignableCache = new Map();
+    /** @type {(() => void)|null} */
+    this._onFilesUpdated = null;
   }
 
   /**
    * Fast boot: hydrate from index-cache.json if present, then schedule a full
    * background scan that rewrites registries when finished.
-   * @param {{ onScanComplete?: (info: { generation: number, hydrated: boolean }) => void }} [options]
+   * `useWorker` moves the TypeScript scan/enrichment into a worker thread so the
+   * calling thread stays responsive; results are merged back when ready.
+   * @param {{ onScanComplete?: (info: { generation: number, hydrated: boolean }) => void, useWorker?: boolean, onFilesUpdated?: () => void }} [options]
    * @returns {{ hydrated: boolean }}
    */
   boot(options = {}) {
     if (options.onScanComplete) {
       this._onScanComplete = options.onScanComplete;
+    }
+    if (options.onFilesUpdated) {
+      this._onFilesUpdated = options.onFilesUpdated;
     }
 
     const cache = loadIndexCache(this.rootPath);
@@ -83,17 +102,22 @@ class ProjectIndex {
       const hydrated = this.hydratedFromCache;
       // Delay slightly so didOpen / first completions can run from cache first.
       setTimeout(() => {
-        this._runBackgroundScan()
-          .catch((err) => {
-            console.error("[blaze-component-lsp] Background scan failed:", err);
-          })
-          .finally(() => {
-            this.scanning = false;
-            this.generation += 1;
-            if (this._onScanComplete) {
-              this._onScanComplete({ generation: this.generation, hydrated });
-            }
-          });
+        const finish = () => {
+          this.scanning = false;
+          this.generation += 1;
+          if (this._onScanComplete) {
+            this._onScanComplete({ generation: this.generation, hydrated });
+          }
+        };
+        const runLocal = () => {
+          this._runBackgroundScan()
+            .catch((err) => {
+              console.error("[blaze-component-lsp] Background scan failed:", err);
+            })
+            .finally(finish);
+        };
+        if (options.useWorker && this._startWorker(finish, runLocal)) return;
+        runLocal();
       }, 75);
     }
 
@@ -165,6 +189,114 @@ class ProjectIndex {
     }
     this.scan({ enrich: false });
     return "scan";
+  }
+
+  /**
+   * Spawn the enrichment worker. Returns false if it could not be started.
+   * @param {() => void} onDone - initial scan finished (success or failure)
+   * @param {() => void} fallback - run the scan on this thread instead
+   * @returns {boolean}
+   */
+  _startWorker(onDone, fallback) {
+    try {
+      const sync = new MessageChannel();
+      const syncFlag = new SharedArrayBuffer(4);
+      const worker = new Worker(path.join(__dirname, "enrichWorker.js"), {
+        workerData: { rootPath: this.rootPath, syncPort: sync.port2, syncFlag },
+        transferList: [sync.port2]
+      });
+      this._worker = worker;
+      this._syncChannel = { port: sync.port1, flag: new Int32Array(syncFlag) };
+      let finished = false;
+
+      worker.on("message", (/** @type {any} */ msg) => {
+        if (msg.type === "scanDone") {
+          hydrateFromCache(this, msg.cache);
+          this._workerTypesReady = true;
+          this._assignableCache.clear();
+          finished = true;
+          onDone();
+        } else if (msg.type === "scanFailed") {
+          console.error("[blaze-component-lsp] Worker scan failed:", msg.message);
+          this._disposeWorker();
+          finished = true;
+          fallback();
+        } else if (msg.type === "files") {
+          for (const f of msg.files) {
+            this.componentIndexer.applyFileResult(f.filePath, f.components, f.globals);
+          }
+          this._assignableCache.clear();
+          this._registryEmitter.schedule();
+          if (this._onFilesUpdated) this._onFilesUpdated();
+        } else if (msg.type === "error") {
+          console.error("[blaze-component-lsp] Worker error:", msg.message);
+        }
+      });
+      worker.on("error", (err) => {
+        console.error("[blaze-component-lsp] Enrichment worker crashed:", err);
+        this._disposeWorker();
+        if (!finished) {
+          finished = true;
+          fallback();
+        }
+      });
+      worker.on("exit", () => {
+        if (this._worker === worker) this._disposeWorker();
+      });
+
+      this.typeService.onOverlay = (filePath, content) => {
+        if (filePath.endsWith(".d.ts") && this._worker) {
+          this._worker.postMessage({ type: "overlay", filePath, content });
+        }
+      };
+      return true;
+    } catch (err) {
+      console.error("[blaze-component-lsp] Could not start enrichment worker:", err);
+      this._disposeWorker();
+      return false;
+    }
+  }
+
+  /**
+   * Stop the enrichment worker (if any) and return to in-thread behaviour.
+   */
+  _disposeWorker() {
+    const worker = this._worker;
+    this._worker = null;
+    this._workerTypesReady = false;
+    this.typeService.onOverlay = null;
+    if (this._syncChannel) {
+      this._syncChannel.port.close();
+      this._syncChannel = null;
+    }
+    if (worker) worker.terminate().catch(() => {});
+  }
+
+  /**
+   * Release background resources (worker thread, timers).
+   */
+  dispose() {
+    this._registryEmitter.cancel();
+    this._disposeWorker();
+  }
+
+  /**
+   * Ask the worker whether actual is assignable to expected, synchronously.
+   * @param {string} actual
+   * @param {string} expected
+   * @returns {boolean|undefined} undefined when the worker is busy/unavailable
+   */
+  _workerAssignable(actual, expected) {
+    const ch = this._syncChannel;
+    if (!ch) return undefined;
+    const id = ++this._syncQueryId;
+    Atomics.store(ch.flag, 0, 0);
+    ch.port.postMessage({ id, actual, expected });
+    if (Atomics.wait(ch.flag, 0, 0, SYNC_QUERY_TIMEOUT_MS) === "timed-out") return undefined;
+    for (let m = receiveMessageOnPort(ch.port); m; m = receiveMessageOnPort(ch.port)) {
+      if (m.message.id === id) return m.message.result;
+    }
+    return undefined;
   }
 
   /**
@@ -256,6 +388,14 @@ class ProjectIndex {
       this._indexedFiles.add(filePath);
       this._registryEmitter.schedule();
     } else if (filePath.endsWith(".js") || filePath.endsWith(".jsx")) {
+      if (this._worker) {
+        // Parse-only here (instant); the worker sends back the checker-enriched result.
+        this.componentIndexer.indexFile(filePath, source);
+        this._worker.postMessage({ type: "updateFile", filePath, source });
+        this._indexedFiles.add(filePath);
+        this._registryEmitter.schedule();
+        return;
+      }
       // Ensure checker enrichment for live edits
       if (this.typeService && !this.typeService.isReady) {
         this.typeService.ensureReady();
@@ -277,6 +417,7 @@ class ProjectIndex {
     } else if (filePath.endsWith(".js") || filePath.endsWith(".jsx")) {
       this.componentIndexer.removeFile(filePath);
       this.typeService.removeFile(filePath);
+      if (this._worker) this._worker.postMessage({ type: "removeFile", filePath });
       this._registryEmitter.schedule();
     }
     this._indexedFiles.delete(filePath);
@@ -305,6 +446,17 @@ class ProjectIndex {
    * @returns {boolean}
    */
   isTypeAssignable(actualType, expectedType) {
+    if (this._worker) {
+      if (!this._workerTypesReady) return fallbackStringMatch(actualType, expectedType);
+      const key = `${actualType}\0${expectedType}`;
+      let result = this._assignableCache.get(key);
+      if (result === undefined) {
+        result = this._workerAssignable(actualType, expectedType);
+        if (result === undefined) return fallbackStringMatch(actualType, expectedType);
+        this._assignableCache.set(key, result);
+      }
+      return result;
+    }
     return this.typeService.isAssignableByString(actualType, expectedType);
   }
 
@@ -313,6 +465,11 @@ class ProjectIndex {
    * @returns {boolean} true if anything was refreshed
    */
   refreshStaleComponents() {
+    if (this._worker) {
+      // Worker re-indexes stale files and reports back via onFilesUpdated.
+      if (this._workerTypesReady) this._worker.postMessage({ type: "refresh" });
+      return false;
+    }
     if (this.typeService && !this.typeService.isReady) {
       // Nothing checker-backed yet; skip until background scan finishes
       return false;

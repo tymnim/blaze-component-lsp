@@ -79,6 +79,8 @@ function createServer(connection) {
     if (!index) {
       index = new ProjectIndex(meteorRoot);
       const { hydrated } = index.boot({
+        useWorker: process.env.BLAZE_LSP_NO_WORKER !== "1",
+        onFilesUpdated: () => scheduleHtmlDiagnosticsForIndex(index),
         onScanComplete: ({ generation }) => {
           connection.console.log(
             `[blaze-component-lsp] Background scan complete for ${meteorRoot}: ` +
@@ -309,7 +311,6 @@ function createServer(connection) {
     const filePath = uriToPath(params.textDocument.uri);
     const index = getIndexForFile(filePath);
     if (!index) return null;
-    ensureFreshIndex(filePath, index);
 
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
@@ -317,7 +318,10 @@ function createServer(connection) {
     const source = doc.getText();
     const { line, character } = params.position;
 
-    return getDefinition(index, filePath, source, line, character);
+    const result = getDefinition(index, filePath, source, line, character);
+    // Stale-file refresh runs the TS checker; do it after replying so the jump is instant.
+    setImmediate(() => ensureFreshIndex(filePath, index));
+    return result;
   });
 
   connection.onReferences((params) => {
@@ -349,9 +353,7 @@ function createServer(connection) {
       if (!index) return;
       // Avoid forcing TypeService during cold boot / background scan — that was
       // freezing Neovim on first HTML open. Diagnostics run again onScanComplete.
-      if (index.scanning || (index.typeService && !index.typeService.isReady)) {
-        return;
-      }
+      if (index.scanning) return;
       forceRefreshIndex(filePath, index);
       const source = document.getText();
       const config = getConfigForFile(filePath);
