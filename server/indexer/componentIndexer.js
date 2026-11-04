@@ -131,8 +131,9 @@ class ComponentIndexer {
    * Restore components + global helpers from index-cache.json.
    * @param {object[]} cachedComponents
    * @param {object[]} cachedGlobals
+   * @param {number} [cacheTimeMs] - when the cache was written; files modified later count as stale
    */
-  hydrateFromCache(cachedComponents, cachedGlobals) {
+  hydrateFromCache(cachedComponents, cachedGlobals, cacheTimeMs = Infinity) {
     this.components.clear();
     this.fileComponents.clear();
     this.globalHelpers.clear();
@@ -164,7 +165,7 @@ class ComponentIndexer {
           byFile.set(comp.filePath, list);
           // Use real mtime (not 0). A zero mtime makes every file look stale and
           // forces a full re-enrich on refreshStaleFiles — very expensive on large apps.
-          this._mtimes.set(comp.filePath, safeMtime(comp.filePath));
+          this._mtimes.set(comp.filePath, Math.min(safeMtime(comp.filePath), cacheTimeMs));
         }
       }
     }
@@ -193,7 +194,7 @@ class ComponentIndexer {
           list.push(g);
           globalsByFile.set(g.filePath, list);
           if (!this._mtimes.has(g.filePath)) {
-            this._mtimes.set(g.filePath, safeMtime(g.filePath));
+            this._mtimes.set(g.filePath, Math.min(safeMtime(g.filePath), cacheTimeMs));
           }
         }
       }

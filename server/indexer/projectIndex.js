@@ -182,6 +182,7 @@ class ProjectIndex {
       hydrateFromCache(this, cache);
       this.hydratedFromCache = true;
       this.ready = true;
+      this._syncWithDisk();
       // Re-parse only files that changed; TypeService not ready → JSDoc parse only
       this.refreshStaleComponents();
       this.generation += 1;
@@ -297,6 +298,31 @@ class ProjectIndex {
       if (m.message.id === id) return m.message.result;
     }
     return undefined;
+  }
+
+  /**
+   * Reconcile a hydrated cache with the files on disk (parse-only, no TypeService):
+   * index files the cache doesn't know about, drop ones that no longer exist, and
+   * re-read every HTML file (templates carry no mtime tracking).
+   * Without this a partial or outdated cache hides most templates/components.
+   */
+  _syncWithDisk() {
+    /** @type {string[]} */
+    const files = [];
+    this._collectSourceFiles(this.rootPath, files);
+    const onDisk = new Set(files);
+
+    for (const known of [...this._indexedFiles]) {
+      if (!onDisk.has(known)) this.removeFile(known);
+    }
+    for (const file of files) {
+      if (file.endsWith(".html")) {
+        this.templateIndexer.indexFile(file);
+      } else if (!this._indexedFiles.has(file)) {
+        this.componentIndexer.indexFile(file);
+      }
+      this._indexedFiles.add(file);
+    }
   }
 
   /**
@@ -466,9 +492,15 @@ class ProjectIndex {
    */
   refreshStaleComponents() {
     if (this._worker) {
-      // Worker re-indexes stale files and reports back via onFilesUpdated.
-      if (this._workerTypesReady) this._worker.postMessage({ type: "refresh" });
-      return false;
+      if (this._workerTypesReady) {
+        // Worker re-indexes stale files and reports back via onFilesUpdated.
+        this._worker.postMessage({ type: "refresh" });
+        return false;
+      }
+      // Initial worker scan still running: pick up on-disk edits with a parse-only refresh.
+      const changed = this.componentIndexer.refreshStaleFiles();
+      if (changed) this._registryEmitter.schedule();
+      return changed;
     }
     if (this.typeService && !this.typeService.isReady) {
       // Nothing checker-backed yet; skip until background scan finishes
@@ -487,12 +519,12 @@ class ProjectIndex {
   getAvailableIdentifiers(templateName) {
     const component = this.componentIndexer.getComponent(templateName);
     const componentHelpers = component ? component.helpers : [];
-    const contextFields = component ? component.contextDataFields : [];
     const globalHelpers = this.getGlobalHelpers();
-    return {
-      helpers: [...componentHelpers, ...globalHelpers],
-      contextFields
-    };
+    const helpers = [...componentHelpers, ...globalHelpers];
+    // Helpers shadow context data fields of the same name.
+    const helperNames = new Set(helpers.map(h => h.name));
+    const contextFields = (component ? component.contextDataFields : []).filter(f => !helperNames.has(f.name));
+    return { helpers, contextFields };
   }
 
   /**

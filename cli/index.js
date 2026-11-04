@@ -154,6 +154,7 @@ function main() {
 
   let totalErrors = 0;
   let totalWarnings = 0;
+  let totalInfos = 0;
   let totalFiles = 0;
 
   /** @type {Array<{file: string, diagnostics: any[]}>} */
@@ -210,6 +211,7 @@ function main() {
 
         if (sev === 1) totalErrors++;
         else if (sev === 2) totalWarnings++;
+        else totalInfos++;
       }
     }
   }
@@ -220,6 +222,8 @@ function main() {
     const parts = [];
     if (totalErrors > 0) parts.push(useColor ? `${SEVERITY_COLORS[1]}${totalErrors} error${totalErrors === 1 ? "" : "s"}${RESET}` : `${totalErrors} error${totalErrors === 1 ? "" : "s"}`);
     if (totalWarnings > 0) parts.push(useColor ? `${SEVERITY_COLORS[2]}${totalWarnings} warning${totalWarnings === 1 ? "" : "s"}${RESET}` : `${totalWarnings} warning${totalWarnings === 1 ? "" : "s"}`);
+
+    if (totalInfos > 0) parts.push(`${totalInfos} info${totalInfos === 1 ? "" : "s"}`);
 
     if (parts.length > 0) {
       console.log(`\n${parts.join(", ")} in ${totalFiles} file${totalFiles === 1 ? "" : "s"}\n`);

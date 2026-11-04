@@ -139,7 +139,13 @@ function loadIndexCache(rootPath) {
  */
 function hydrateFromCache(index, cache) {
   index.templateIndexer.hydrateFromCache(cache.templates);
-  index.componentIndexer.hydrateFromCache(cache.components, cache.globalHelpers);
+  // Files edited after the cache was written must look stale so refresh re-parses them.
+  const cacheTime = Date.parse(cache.generatedAt);
+  index.componentIndexer.hydrateFromCache(
+    cache.components,
+    cache.globalHelpers,
+    Number.isFinite(cacheTime) ? cacheTime : Infinity
+  );
 
   for (const tpl of cache.templates) {
     if (tpl.filePath) index._indexedFiles.add(tpl.filePath);

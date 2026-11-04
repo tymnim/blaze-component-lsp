@@ -353,7 +353,8 @@ function createServer(connection) {
       if (!index) return;
       // Avoid forcing TypeService during cold boot / background scan — that was
       // freezing Neovim on first HTML open. Diagnostics run again onScanComplete.
-      if (index.scanning) return;
+      // A hydrated cache is complete enough for helper/template checks; only skip on an empty cold index.
+      if (index.scanning && !index.hydratedFromCache) return;
       forceRefreshIndex(filePath, index);
       const source = document.getText();
       const config = getConfigForFile(filePath);
