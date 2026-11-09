@@ -35,6 +35,16 @@ describe("getDiagnostics", () => {
     assert.equal(diags[0].severity, 2);
   });
 
+  it("should report unknown helper as an error with errorOnUnknownHelper", () => {
+    const source = '<template name="toggleButton">\n  {{unknownHelper}}\n</template>';
+    index.updateFile("/test/toggle.html", source);
+
+    const diags = getDiagnostics(index, "/test/toggle.html", source, { errorOnTypeMismatch: false, errorOnUnknownHelper: true });
+    const unknown = diags.filter(d => d.message.includes("unknownHelper"));
+    assert.ok(unknown.length > 0);
+    assert.ok(unknown.every(d => d.severity === 1));
+  });
+
   it("should report unknown template in partial", () => {
     const source = '<template name="toggleButton">\n  {{> nonExistentTemplate}}\n</template>';
     index.updateFile("/test/toggle.html", source);

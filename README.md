@@ -266,6 +266,7 @@ Create a `blaze-component-config.json` file next to `.meteor` (app) or `package.
 {
   "errorOnTypeMismatch": false,
   "errorOnMissingComponent": false,
+  "errorOnUnknownHelper": false,
   "scripts": ["npm run types:watch"]
 }
 ```
@@ -276,6 +277,7 @@ Create a `blaze-component-config.json` file next to `.meteor` (app) or `package.
 |-----|------|---------|-------------|
 | `errorOnTypeMismatch` | `boolean` | `false` | When `true`, type mismatches are reported as errors. When `false`, they are warnings. Applies to both the LSP and CLI. |
 | `errorOnMissingComponent` | `boolean` | `false` | When `true`, templates with no registered BlazeComponent are reported as errors instead of info. Applies to both the LSP and CLI (exit code 1). |
+| `errorOnUnknownHelper` | `boolean` | `false` | When `true`, `Unknown helper or data field "…"` diagnostics are reported as errors instead of warnings. Applies to both the LSP and CLI (exit code 1). |
 | `scripts` | `string[]` | `[]` | Shell commands the LSP starts (once each) when the workspace opens, with the config file's directory as cwd, e.g. `["npm run types:watch"]`. Output goes to the LSP log; they are stopped on shutdown and when removed from the config. Not restarted if they exit. **These run arbitrary commands — only use in repos you trust.** |
 
 The CLI flag `--error-on-type-mismatch` overrides this config when set.

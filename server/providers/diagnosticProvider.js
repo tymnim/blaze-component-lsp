@@ -24,6 +24,7 @@ const BUILTIN_TEMPLATES = new Set(["Template.dynamic", "Template.contentBlock", 
  * @typedef {Object} BlazeConfig
  * @prop {boolean} errorOnTypeMismatch
  * @prop {boolean} [errorOnMissingComponent]
+ * @prop {boolean} [errorOnUnknownHelper]
  */
 
 /**
@@ -164,6 +165,12 @@ function getDiagnostics(index, filePath, source, config) {
         }
       }
     });
+  }
+
+  if (config && config.errorOnUnknownHelper) {
+    for (const d of diagnostics) {
+      if (d.message.startsWith("Unknown helper or data field")) d.severity = DiagnosticSeverity.Error;
+    }
   }
 
   return diagnostics;

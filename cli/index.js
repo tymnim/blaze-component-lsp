@@ -174,11 +174,11 @@ function main() {
     process.exit(1);
   }
 
-  /** @type {Map<string, { errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean }>} */
+  /** @type {Map<string, { errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean, errorOnUnknownHelper: boolean }>} */
   const configs = new Map();
 
   for (const meteorRoot of indexes.keys()) {
-    const config = { errorOnTypeMismatch, errorOnMissingComponent: false };
+    const config = { errorOnTypeMismatch, errorOnMissingComponent: false, errorOnUnknownHelper: false };
     const boundDir = boundDirFor(meteorRoot);
     const configPath = boundDir ? findConfigFile(meteorRoot, boundDir) : null;
     if (configPath) {
@@ -186,6 +186,9 @@ function main() {
         const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
         if (!errorOnTypeMismatch && typeof parsed.errorOnTypeMismatch === "boolean") {
           config.errorOnTypeMismatch = parsed.errorOnTypeMismatch;
+        }
+        if (typeof parsed.errorOnUnknownHelper === "boolean") {
+          config.errorOnUnknownHelper = parsed.errorOnUnknownHelper;
         }
         if (typeof parsed.errorOnMissingComponent === "boolean") {
           config.errorOnMissingComponent = parsed.errorOnMissingComponent;

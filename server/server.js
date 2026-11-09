@@ -74,23 +74,26 @@ function createServer(connection) {
   /**
    * Read blaze-component-config.json from the Meteor root.
    * @param {string} filePath
-   * @returns {{ errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean }}
+   * @returns {{ errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean, errorOnUnknownHelper: boolean }}
    */
   function getConfigForFile(filePath) {
     const meteorRoot = findProjectRoot(filePath);
-    if (!meteorRoot) return { errorOnTypeMismatch: false, errorOnMissingComponent: false };
+    if (!meteorRoot) return { errorOnTypeMismatch: false, errorOnMissingComponent: false, errorOnUnknownHelper: false };
 
     const cached = projectConfigs.get(meteorRoot);
     if (cached) return /** @type {any} */ (cached);
 
     const configPath = findConfigFile(meteorRoot, boundDirFor(meteorRoot) ?? undefined) || path.join(meteorRoot, "blaze-component-config.json");
-    /** @type {{ errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean }} */
-    let config = { errorOnTypeMismatch: false, errorOnMissingComponent: false };
+    /** @type {{ errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean, errorOnUnknownHelper: boolean }} */
+    let config = { errorOnTypeMismatch: false, errorOnMissingComponent: false, errorOnUnknownHelper: false };
     try {
       const raw = fs.readFileSync(configPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (typeof parsed.errorOnTypeMismatch === "boolean") {
         config.errorOnTypeMismatch = parsed.errorOnTypeMismatch;
+      }
+      if (typeof parsed.errorOnUnknownHelper === "boolean") {
+        config.errorOnUnknownHelper = parsed.errorOnUnknownHelper;
       }
       if (typeof parsed.errorOnMissingComponent === "boolean") {
         config.errorOnMissingComponent = parsed.errorOnMissingComponent;
