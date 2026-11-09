@@ -23,6 +23,7 @@ const BUILTIN_TEMPLATES = new Set(["Template.dynamic", "Template.contentBlock", 
 /**
  * @typedef {Object} BlazeConfig
  * @prop {boolean} errorOnTypeMismatch
+ * @prop {boolean} [errorOnMissingComponent]
  */
 
 /**
@@ -37,6 +38,9 @@ function getDiagnostics(index, filePath, source, config) {
   const typeSeverity = config && config.errorOnTypeMismatch
     ? DiagnosticSeverity.Error
     : DiagnosticSeverity.Warning;
+  const missingSeverity = config && config.errorOnMissingComponent
+    ? DiagnosticSeverity.Error
+    : DiagnosticSeverity.Information;
   const templates = parseHTML(source, filePath);
   /** @type {import("vscode-languageserver").Diagnostic[]} */
   const diagnostics = [];
@@ -50,7 +54,7 @@ function getDiagnostics(index, filePath, source, config) {
           start: { line: template.range.start.line, character: template.range.start.column },
           end: { line: template.range.start.line, character: template.range.start.column + template.name.length + 20 }
         },
-        severity: DiagnosticSeverity.Information,
+        severity: missingSeverity,
         source: "blaze-component-lsp",
         message: `Template "${template.name}" has no BlazeComponent registered`
       });

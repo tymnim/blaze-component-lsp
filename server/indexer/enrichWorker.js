@@ -8,7 +8,7 @@ const { serializeIndexCache } = require("../typescript/indexCache");
 if (!parentPort) throw new Error("enrichWorker must run in a worker thread");
 const port = parentPort;
 
-const index = new ProjectIndex(workerData.rootPath);
+const index = new ProjectIndex(workerData.rootPath, { boundaryDirs: workerData.boundaryDirs });
 
 /** @param {string} filePath */
 function snapshotFile(filePath) {

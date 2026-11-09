@@ -17,7 +17,8 @@ const { getHover } = require("./providers/hoverProvider");
 const { getDefinition } = require("./providers/definitionProvider");
 const { getDiagnostics } = require("./providers/diagnosticProvider");
 const { getReferences } = require("./providers/referenceProvider");
-const { uriToPath, findProjectRoot } = require("./utils/uri");
+const { uriToPath, findProjectRoot: findUnboundedRoot, findConfigFile } = require("./utils/uri");
+const { isWithin } = require("./utils/boundary");
 const { createScriptRunner, readScripts, findConfigRoots, CONFIG_NAME } = require("./scripts/scriptRunner");
 
 /**
@@ -40,6 +41,28 @@ function createServer(connection) {
   /** @type {string[]} */
   let workspaceRoots = [];
 
+  /**
+   * Workspace folder that contains `p`. With no workspace folders the server is
+   * unbounded; a path outside every workspace folder has no bound (null) and is ignored.
+   * @param {string} p
+   * @returns {string|null|undefined} undefined = unbounded
+   */
+  function boundDirFor(p) {
+    if (workspaceRoots.length === 0) return undefined;
+    return workspaceRoots.find((r) => isWithin(p, r)) ?? null;
+  }
+
+  /**
+   * Project root for a file, never climbing above its workspace folder.
+   * @param {string} filePath
+   * @returns {string|null}
+   */
+  function findProjectRoot(filePath) {
+    const bound = boundDirFor(filePath);
+    if (bound === null) return null;
+    return findUnboundedRoot(filePath, bound);
+  }
+
   /** @param {string} root directory containing blaze-component-config.json */
   function syncScripts(root) {
     scriptRunner.sync(root, readScripts(path.join(root, CONFIG_NAME)));
@@ -51,23 +74,26 @@ function createServer(connection) {
   /**
    * Read blaze-component-config.json from the Meteor root.
    * @param {string} filePath
-   * @returns {{ errorOnTypeMismatch: boolean }}
+   * @returns {{ errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean }}
    */
   function getConfigForFile(filePath) {
     const meteorRoot = findProjectRoot(filePath);
-    if (!meteorRoot) return { errorOnTypeMismatch: false };
+    if (!meteorRoot) return { errorOnTypeMismatch: false, errorOnMissingComponent: false };
 
     const cached = projectConfigs.get(meteorRoot);
     if (cached) return /** @type {any} */ (cached);
 
-    const configPath = path.join(meteorRoot, "blaze-component-config.json");
-    /** @type {{ errorOnTypeMismatch: boolean }} */
-    let config = { errorOnTypeMismatch: false };
+    const configPath = findConfigFile(meteorRoot, boundDirFor(meteorRoot) ?? undefined) || path.join(meteorRoot, "blaze-component-config.json");
+    /** @type {{ errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean }} */
+    let config = { errorOnTypeMismatch: false, errorOnMissingComponent: false };
     try {
       const raw = fs.readFileSync(configPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (typeof parsed.errorOnTypeMismatch === "boolean") {
         config.errorOnTypeMismatch = parsed.errorOnTypeMismatch;
+      }
+      if (typeof parsed.errorOnMissingComponent === "boolean") {
+        config.errorOnMissingComponent = parsed.errorOnMissingComponent;
       }
       connection.console.log(`[blaze-component-lsp] Loaded config from ${configPath}`);
     } catch {}
@@ -87,7 +113,7 @@ function createServer(connection) {
 
     let index = projectIndexes.get(meteorRoot);
     if (!index) {
-      index = new ProjectIndex(meteorRoot);
+      index = new ProjectIndex(meteorRoot, workspaceRoots.length ? { boundaryDirs: workspaceRoots } : {});
       const { hydrated } = index.boot({
         useWorker: process.env.BLAZE_LSP_NO_WORKER !== "1",
         onFilesUpdated: () => scheduleHtmlDiagnosticsForIndex(index),

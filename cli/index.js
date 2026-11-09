@@ -4,7 +4,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { ProjectIndex } = require("../server/indexer/projectIndex");
 const { getDiagnostics } = require("../server/providers/diagnosticProvider");
-const { findProjectRoot } = require("../server/utils/uri");
+const { findProjectRoot, findConfigFile } = require("../server/utils/uri");
+const { createBoundary, isWithin } = require("../server/utils/boundary");
 const {
   setFileTraceEnabled,
   isFileTraceEnabled,
@@ -71,6 +72,33 @@ function main() {
 
   if (targets.length === 0) targets.push(".");
 
+  for (const target of targets) {
+    if (!fs.existsSync(path.resolve(target))) {
+      console.error(`Path not found: ${target}`);
+      process.exit(1);
+    }
+  }
+
+  const cwd = process.cwd();
+  const targetDirs = targets.map((t) => {
+    const resolved = path.resolve(t);
+    return fs.statSync(resolved).isDirectory() ? resolved : path.dirname(resolved);
+  });
+  // Nothing is indexed, read or followed (symlinks included) outside the cwd, or, for
+  // targets outside it, outside the target itself.
+  const boundaryDirs = [cwd, ...targetDirs.filter((d) => !isWithin(d, cwd))];
+  const boundary = createBoundary(boundaryDirs);
+  /** @param {string} p */
+  const boundDirFor = (p) => isWithin(p, cwd) ? cwd : targetDirs.find((d) => isWithin(p, d));
+  /**
+   * @param {string} p
+   * @returns {string|null}
+   */
+  const projectRootFor = (p) => {
+    const dir = boundDirFor(p);
+    return dir ? findProjectRoot(p, dir) : null;
+  };
+
   /** @type {string[]} */
   const htmlFiles = [];
   for (const target of targets) {
@@ -79,11 +107,15 @@ function main() {
       console.error(`Path not found: ${target}`);
       process.exit(1);
     }
+    if (!boundary.contains(resolved)) {
+      console.error(`Refusing ${target}: it resolves outside the current directory.`);
+      process.exit(1);
+    }
     if (fs.statSync(resolved).isFile()) {
       if (resolved.endsWith(".html")) htmlFiles.push(resolved);
       else console.error(`Skipping non-HTML file: ${target}`);
     } else {
-      collectHtmlFiles(resolved, htmlFiles);
+      collectHtmlFiles(resolved, htmlFiles, boundary);
     }
   }
 
@@ -92,11 +124,15 @@ function main() {
     process.exit(0);
   }
 
-  /** App (.meteor) or package (package.js) roots implied by CLI targets only. */
+  /** App (.meteor) or package (package.js) roots found at or below the CLI targets, within the bound. */
   /** @type {Set<string>} */
   const allowedRoots = new Set();
   for (const target of targets) {
-    const root = findProjectRoot(path.resolve(target));
+    const root = projectRootFor(path.resolve(target));
+    if (root) allowedRoots.add(root);
+  }
+  for (const file of htmlFiles) {
+    const root = projectRootFor(file);
     if (root) allowedRoots.add(root);
   }
 
@@ -110,7 +146,7 @@ function main() {
   }
 
   for (const root of allowedRoots) {
-    const index = new ProjectIndex(root);
+    const index = new ProjectIndex(root, { boundaryDirs });
     if (isFileTraceEnabled()) {
       traceFiles(`load begin meteorRoot=${root}`);
     }
@@ -138,18 +174,25 @@ function main() {
     process.exit(1);
   }
 
-  /** @type {{ errorOnTypeMismatch: boolean }} */
-  let fileConfig = { errorOnTypeMismatch };
+  /** @type {Map<string, { errorOnTypeMismatch: boolean, errorOnMissingComponent: boolean }>} */
+  const configs = new Map();
 
-  for (const [meteorRoot, index] of indexes) {
-    const configPath = path.join(meteorRoot, "blaze-component-config.json");
-    try {
-      const raw = fs.readFileSync(configPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (!errorOnTypeMismatch && typeof parsed.errorOnTypeMismatch === "boolean") {
-        fileConfig = { errorOnTypeMismatch: parsed.errorOnTypeMismatch };
-      }
-    } catch {}
+  for (const meteorRoot of indexes.keys()) {
+    const config = { errorOnTypeMismatch, errorOnMissingComponent: false };
+    const boundDir = boundDirFor(meteorRoot);
+    const configPath = boundDir ? findConfigFile(meteorRoot, boundDir) : null;
+    if (configPath) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        if (!errorOnTypeMismatch && typeof parsed.errorOnTypeMismatch === "boolean") {
+          config.errorOnTypeMismatch = parsed.errorOnTypeMismatch;
+        }
+        if (typeof parsed.errorOnMissingComponent === "boolean") {
+          config.errorOnMissingComponent = parsed.errorOnMissingComponent;
+        }
+      } catch {}
+    }
+    configs.set(meteorRoot, config);
   }
 
   let totalErrors = 0;
@@ -161,14 +204,16 @@ function main() {
   const allResults = [];
 
   for (const file of htmlFiles) {
-    const projectRoot = findProjectRoot(file);
+    const projectRoot = projectRootFor(file);
     // Prefer the file's own root when it is one we intentionally scanned; otherwise
     // fall back to the single allowed root (package symlink HTML under this app).
-    let index = projectRoot ? indexes.get(projectRoot) : undefined;
-    if (!index && allowedRoots.size === 1) {
-      index = indexes.get([...allowedRoots][0]);
+    let indexRoot = projectRoot && indexes.has(projectRoot) ? projectRoot : undefined;
+    if (!indexRoot && allowedRoots.size === 1) {
+      indexRoot = [...allowedRoots][0];
     }
-    if (!index) continue;
+    const index = indexRoot ? indexes.get(indexRoot) : undefined;
+    if (!index || !indexRoot) continue;
+    const fileConfig = /** @type {NonNullable<ReturnType<typeof configs.get>>} */ (configs.get(indexRoot));
 
     const source = fs.readFileSync(file, "utf-8");
     const diagnostics = getDiagnostics(index, file, source, fileConfig);
@@ -238,8 +283,9 @@ function main() {
 /**
  * @param {string} dir
  * @param {string[]} results
+ * @param {{ contains(p: string): boolean }} boundary
  */
-function collectHtmlFiles(dir, results) {
+function collectHtmlFiles(dir, results, boundary) {
   const IGNORE = new Set([
     "node_modules", ".meteor", ".git", ".deploy",
     "cordova-build-override", "public", "resources"
@@ -260,6 +306,7 @@ function collectHtmlFiles(dir, results) {
     let isDir = entry.isDirectory();
     let isFile = entry.isFile();
     if (entry.isSymbolicLink()) {
+      if (!boundary.contains(full)) continue;
       try {
         const st = fs.statSync(full);
         isDir = st.isDirectory();
@@ -268,7 +315,7 @@ function collectHtmlFiles(dir, results) {
     }
 
     if (isDir) {
-      collectHtmlFiles(full, results);
+      collectHtmlFiles(full, results, boundary);
     } else if (isFile && entry.name.endsWith(".html")) {
       results.push(full);
     }

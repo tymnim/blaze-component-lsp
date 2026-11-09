@@ -6,6 +6,7 @@ const { ComponentIndexer } = require("./componentIndexer");
 const { TypeService, isFileTraceEnabled, traceFiles, fallbackStringMatch } = require("../typescript/typeService");
 const { createDebouncedEmitter, getRegistryPath } = require("../typescript/templateRegistryEmitter");
 const { loadIndexCache, hydrateFromCache } = require("../typescript/indexCache");
+const { createBoundary } = require("./../utils/boundary");
 const { Worker, MessageChannel, receiveMessageOnPort } = require("node:worker_threads");
 
 const SYNC_QUERY_TIMEOUT_MS = 1000;
@@ -37,8 +38,15 @@ class ProjectIndex {
   /**
    * @param {string} rootPath - Project root directory
    */
-  constructor(rootPath) {
+  /**
+   * @param {string} rootPath
+   * @param {{ boundaryDirs?: string[] }} [options] Symlinks are only followed while their
+   *   real path stays inside one of boundaryDirs (default: unrestricted).
+   */
+  constructor(rootPath, options = {}) {
     this.rootPath = rootPath;
+    this.boundaryDirs = options.boundaryDirs;
+    this._boundary = options.boundaryDirs ? createBoundary(options.boundaryDirs) : null;
     this.typeService = new TypeService(rootPath);
     this.templateIndexer = new TemplateIndexer();
     this.componentIndexer = new ComponentIndexer(this.typeService);
@@ -203,7 +211,7 @@ class ProjectIndex {
       const sync = new MessageChannel();
       const syncFlag = new SharedArrayBuffer(4);
       const worker = new Worker(path.join(__dirname, "enrichWorker.js"), {
-        workerData: { rootPath: this.rootPath, syncPort: sync.port2, syncFlag },
+        workerData: { rootPath: this.rootPath, boundaryDirs: this.boundaryDirs, syncPort: sync.port2, syncFlag },
         transferList: [sync.port2]
       });
       this._worker = worker;
@@ -654,6 +662,11 @@ class ProjectIndex {
     this._scanDirectoryInto(dirPath, this.templateIndexer, this.componentIndexer, this._indexedFiles);
   }
 
+  /** @param {string} fullPath a symlink */
+  _canFollow(fullPath) {
+    return !this._boundary || this._boundary.contains(fullPath);
+  }
+
   /**
    * Recursively scan into explicit indexers (used by sync scan()).
    * @param {string} dirPath
@@ -674,8 +687,9 @@ class ProjectIndex {
       if (IGNORE_DIRS.has(entry.name)) continue;
 
       const fullPath = path.join(dirPath, entry.name);
-      const isDir = entry.isDirectory() || (entry.isSymbolicLink() && isDirectorySync(fullPath));
-      const isFile = entry.isFile() || (entry.isSymbolicLink() && isFileSync(fullPath));
+      const followable = entry.isSymbolicLink() && this._canFollow(fullPath);
+      const isDir = entry.isDirectory() || (followable && isDirectorySync(fullPath));
+      const isFile = entry.isFile() || (followable && isFileSync(fullPath));
 
       if (isDir) {
         this._scanDirectoryInto(fullPath, templates, components, indexedFiles);
@@ -743,8 +757,9 @@ class ProjectIndex {
       if (IGNORE_DIRS.has(entry.name)) continue;
 
       const fullPath = path.join(dirPath, entry.name);
-      const isDir = entry.isDirectory() || (entry.isSymbolicLink() && isDirectorySync(fullPath));
-      const isFile = entry.isFile() || (entry.isSymbolicLink() && isFileSync(fullPath));
+      const followable = entry.isSymbolicLink() && this._canFollow(fullPath);
+      const isDir = entry.isDirectory() || (followable && isDirectorySync(fullPath));
+      const isFile = entry.isFile() || (followable && isFileSync(fullPath));
 
       if (isDir) {
         this._collectSourceFiles(fullPath, out);
