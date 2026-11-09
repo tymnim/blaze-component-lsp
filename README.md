@@ -274,6 +274,8 @@ Create a `blaze-component-config.json` file next to `.meteor` (app) or `package.
 |-----|------|---------|-------------|
 | `errorOnTypeMismatch` | `boolean` | `false` | When `true`, type mismatches are reported as errors. When `false`, they are warnings. Applies to both the LSP and CLI. |
 
+| `scripts` | `string[]` | `[]` | Shell commands the LSP starts (once each) when the workspace opens, with the config file's directory as cwd, e.g. `["npm run types:watch"]`. Output goes to the LSP log; they are stopped on shutdown and when removed from the config. Not restarted if they exit. **These run arbitrary commands — only use in repos you trust.** |
+
 The CLI flag `--error-on-type-mismatch` overrides this config when set.
 
 The LSP server picks up changes to this file automatically — no restart required.

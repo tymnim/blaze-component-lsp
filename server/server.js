@@ -18,6 +18,7 @@ const { getDefinition } = require("./providers/definitionProvider");
 const { getDiagnostics } = require("./providers/diagnosticProvider");
 const { getReferences } = require("./providers/referenceProvider");
 const { uriToPath, findProjectRoot } = require("./utils/uri");
+const { createScriptRunner, readScripts, findConfigRoots, CONFIG_NAME } = require("./scripts/scriptRunner");
 
 /**
  * Create and configure the LSP server.
@@ -34,6 +35,15 @@ function createServer(connection) {
 
   /** @type {Map<string, object>} meteorRoot → config */
   const projectConfigs = new Map();
+
+  const scriptRunner = createScriptRunner((msg) => connection.console.log(msg));
+  /** @type {string[]} */
+  let workspaceRoots = [];
+
+  /** @param {string} root directory containing blaze-component-config.json */
+  function syncScripts(root) {
+    scriptRunner.sync(root, readScripts(path.join(root, CONFIG_NAME)));
+  }
 
   /** @type {ReturnType<typeof setTimeout>|null} */
   let diagnosticDebounce = null;
@@ -131,7 +141,10 @@ function createServer(connection) {
     }
   }
 
-  connection.onInitialize(() => {
+  connection.onInitialize((params) => {
+    workspaceRoots = (params.workspaceFolders ?? [])
+      .map((f) => uriToPath(f.uri));
+    if (workspaceRoots.length === 0 && params.rootUri) workspaceRoots = [uriToPath(params.rootUri)];
     return {
       capabilities: {
         textDocumentSync: TextDocumentSyncKind.Full,
@@ -149,12 +162,17 @@ function createServer(connection) {
   connection.onInitialized(() => {
     connection.console.log("[blaze-component-lsp] Server initialized (lazy per-app indexing)");
 
+    for (const folder of workspaceRoots) {
+      for (const root of findConfigRoots(folder)) syncScripts(root);
+    }
+
     connection.client.register(
       require("vscode-languageserver").DidChangeWatchedFilesNotification.type,
       {
         watchers: [
           { globPattern: "**/*.js" },
-          { globPattern: "**/*.html" }
+          { globPattern: "**/*.html" },
+          { globPattern: `**/${CONFIG_NAME}` }
         ]
       }
     ).then(() => {
@@ -225,7 +243,8 @@ function createServer(connection) {
 
     for (const change of params.changes) {
       const filePath = uriToPath(change.uri);
-      if (filePath.endsWith("blaze-component-config.json")) {
+      if (filePath.endsWith(CONFIG_NAME)) {
+        syncScripts(path.dirname(filePath));
         const meteorRoot = findProjectRoot(filePath);
         if (meteorRoot) {
           projectConfigs.delete(meteorRoot);
@@ -394,6 +413,13 @@ function createServer(connection) {
   }
 
   documents.listen(connection);
+
+  connection.onShutdown(() => scriptRunner.stopAll());
+  connection.onExit(() => scriptRunner.stopAll());
+  process.on("exit", () => scriptRunner.stopAll());
+  for (const sig of /** @type {const} */ (["SIGINT", "SIGTERM"])) {
+    process.on(sig, () => { scriptRunner.stopAll(); process.exit(0); });
+  }
 
   return { connection, documents, getIndexForFile };
 }
